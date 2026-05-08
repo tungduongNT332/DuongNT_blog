@@ -1,0 +1,184 @@
+---
+title: "Nmap — Công Cụ Khám Phá Mạng và Kiểm Toán An Ninh"
+description: "Hướng dẫn toàn diện về Nmap — từ khái niệm, cài đặt, các tính năng chính đến cheat sheet đầy đủ các câu lệnh cho kiểm thử xâm nhập chuyên nghiệp."
+date: "2026-05-08"
+category: "tool"
+tags: ["nmap", "network", "scanning", "pentesting", "reconnaissance"]
+thumbnail: ""
+external_link: ""
+---
+
+Nmap là một trong những công cụ mã nguồn mở, được thiết kế để khám phá mạng và kiểm toán an ninh, Nmap hỗ trợ quản trị viên xác định các thiết bị đang hoạt động, các dịch vụ đang cung cấp và các rủi ro bảo mật tiềm ẩn trên hệ thống.
+
+## 1. Tổng quan
+
+### Khái niệm
+
+Nmap là giải pháp mã nguồn mở tiêu chuẩn được sử dụng rộng rãi để khám phá mạng và đánh giá an ninh hệ thống. Công cụ này cung cấp khả năng phân tích mạng, giúp thu thập thông tin chi tiết về các thành phần trong mạng một cách tự động và chính xác.
+
+![Nmap](/images/tools/nmap/image1.jpeg)
+
+### Nguyên lý hoạt động
+
+Nmap hoạt động bằng cách gửi và phân tích các gói tin IP để tương tác trực tiếp với kiến trúc giao thức TCP/IP. Dựa trên các đặc tính phản hồi như cấu trúc tiêu đề và các cờ trạng thái, công cụ có thể xác định chính xác trạng thái của thiết bị và dịch vụ mà không cần cài đặt thêm phần mềm hỗ trợ trên mục tiêu.
+
+### Mục đích sử dụng
+
+Công cụ được ứng dụng để kiểm kê danh mục các thiết bị kết nối, thực hiện kiểm toán an ninh nhằm phát hiện sai sót cấu hình và giám sát trạng thái hoạt động của các dịch vụ mạng. Đây cũng là thành phần quan trọng trong công tác thu thập thông tin ban đầu để xây dựng các kịch bản kiểm thử xâm nhập chuyên sâu.
+
+## 2. Cài đặt và Cấu hình
+
+Quy trình triển khai Nmap được tối ưu hóa cho nhiều môi trường vận hành khác nhau:
+
+- **Windows:** Cài đặt thông qua tệp tin thực thi từ trang chủ nmap.org. Hệ thống sẽ tự động tích hợp thư viện bắt gói tin (Npcap) và thiết lập các biến môi trường cần thiết.
+
+- **macOS:** Triển khai qua tệp tin định dạng .dmg hoặc sử dụng trình quản lý gói Homebrew với lệnh `brew install nmap`.
+
+- **Linux:** Nmap thường có sẵn trong kho lưu trữ chính thức. Có thể cài đặt qua lệnh `sudo apt install nmap` trên Debian, Ubuntu hoặc `sudo dnf install nmap` trên Fedora.
+
+- **Cấu hình đặc quyền:** Để khai thác tối đa các kỹ thuật quét chuyên sâu như phân tích dấu vân tay hệ điều hành hoặc quét hạn chế dấu vết, người dùng cần thực thi lệnh với quyền quản trị cao nhất như Root hoặc Sudo.
+
+## 3. Các tính năng chính
+
+Nmap tích hợp các module chức năng bao quát toàn bộ quy trình thu thập thông tin tình báo mạng:
+
+- **Khám phá máy chủ:** Xác định trạng thái hoạt động của các thiết bị trong một dải địa chỉ IP chỉ định.
+
+- **Quét cổng dịch vụ:** Liệt kê các cổng đang mở trên máy chủ mục tiêu nhằm xác định bề mặt tấn công.
+
+- **Xác định phiên bản dịch vụ:** Phân tích phản hồi để xác định chính xác phiên bản của các phần mềm đang vận hành.
+
+- **Nhận diện hệ điều hành:** Dự đoán nền tảng hệ điều hành dựa trên các đặc tính phản hồi gói tin độc nhất của mục tiêu.
+
+- **Trình điều khiển kịch bản (NSE):** Tự động hóa các quy trình kiểm tra nâng cao như xác định lỗ hổng hoặc kiểm tra cấu hình sai.
+
+## 4. Các thành phần nội dung trọng tâm
+
+Các chức năng của Nmap được phân loại tương ứng với các giai đoạn của quy trình kiểm thử xâm nhập chuyên nghiệp. Chi tiết thực thi cụ thể được trình bày tại mục 6.
+
+- **A. Chỉ định mục tiêu:** Phương pháp xác lập phạm vi thực thi, từ các địa chỉ đơn lẻ đến danh sách mục tiêu từ tệp tin hoặc các dải mạng con.
+
+- **B. Khám phá máy chủ:** Sử dụng các giao thức (ARP), (ICMP) hoặc (TCP) để xác định trạng thái thực tế của thiết bị trước khi tiến hành các bước phân tích sâu hơn.
+
+- **C. Kỹ thuật quét:** Lựa chọn phương thức tương tác gói tin như (SYN), (Connect) hoặc (UDP) nhằm xác định trạng thái của các cổng dịch vụ.
+
+- **D. Chỉ định cổng:** Giới hạn phạm vi kiểm tra vào các cổng dịch vụ cụ thể để tối ưu hóa thời gian và giảm thiểu lưu lượng dư thừa.
+
+- **E. Hiệu suất và Thời gian:** Điều chỉnh các tham số về tốc độ và thời gian chờ để thích ứng với đặc thù của hạ tầng mạng mục tiêu.
+
+- **F. Vượt rào cản an ninh:** Áp dụng các kỹ thuật phân đoạn gói tin hoặc giả mạo thực thể để tránh sự nhận diện của các hệ thống (IDS/IPS).
+
+- **G. Quản lý đầu ra:** Lưu trữ kết quả dưới các định dạng chuyên dụng phục vụ công tác báo cáo hoặc tích hợp vào các hệ thống phân tích dữ liệu.
+
+## 5. Case Study thực tế
+
+Kịch bản: Kiểm tra an ninh máy chủ Web tại địa chỉ 192.168.1.50.
+
+**Bước 1:** Xác định cổng dịch vụ đang mở
+
+```bash
+nmap -sS -T4 192.168.1.50
+```
+
+Kết quả: Xác định cổng 80 (HTTP) và 22 (SSH) đang ở trạng thái Open.
+
+**Bước 2:** Phân tích thông tin công nghệ
+
+```bash
+nmap -sV -O 192.168.1.50
+```
+
+Kết quả: Hệ thống vận hành Apache 2.4.41 trên nền tảng Ubuntu Linux.
+
+**Bước 3:** Xác định lỗ hổng bảo mật
+
+```bash
+nmap --script=vuln 192.168.1.50
+```
+
+Kết quả: Ghi nhận lỗ hổng liên quan đến việc xử lý yêu cầu, làm cơ sở để thực hiện các biện pháp nâng cấp hệ thống.
+
+## 6. Cheat Sheet
+
+Bảng tổng hợp cung cấp cấu trúc câu lệnh hoàn chỉnh cho các tình huống thực thi thực tế.
+
+### A. Chỉ định mục tiêu
+
+| Câu lệnh | Mô tả |
+|-----------|-------|
+| `nmap 192.168.1.1` | Thực thi quét một địa chỉ IP duy nhất. |
+| `nmap 192.168.1.1-254` | Thực thi quét một dải IP liên tục. |
+| `nmap 192.168.1.0/24` | Thực thi quét toàn bộ mạng con. |
+| `nmap -iL targets.txt` | Thực thi quét dựa trên danh sách mục tiêu từ tệp tin. |
+| `nmap --exclude 192.168.1.5 <target>` | Thực thi quét nhưng loại trừ địa chỉ IP cụ thể. |
+
+### B. Khám phá máy chủ
+
+| Câu lệnh | Mô tả |
+|-----------|-------|
+| `nmap -sn <target>` | Chỉ xác định trạng thái hoạt động mà không thực hiện quét cổng. |
+| `nmap -Pn <target>` | Bỏ qua công đoạn xác định trạng thái và coi máy chủ luôn hoạt động. |
+| `nmap -PS22,80 <target>` | Sử dụng (TCP SYN Ping) để xác định trạng thái máy chủ. |
+| `nmap -PU53 <target>` | Sử dụng (UDP Ping) cho mục tiêu. |
+| `nmap -n <target>` | Vô hiệu hóa phân giải tên miền ngược để tối ưu tốc độ. |
+
+### C. Kỹ thuật quét
+
+| Câu lệnh | Mô tả |
+|-----------|-------|
+| `nmap -sS <target>` | Sử dụng (TCP SYN Scan) là kỹ thuật bán mở giúp hạn chế dấu vết. |
+| `nmap -sT <target>` | Sử dụng (TCP Connect Scan) để thiết lập kết nối đầy đủ. |
+| `nmap -sU <target>` | Thực hiện quét các dịch vụ sử dụng giao thức (UDP). |
+| `nmap -sV <target>` | Xác định thông tin phiên bản chi tiết của dịch vụ. |
+| `nmap -O <target>` | Thực hiện nhận diện hệ điều hành của mục tiêu. |
+| `nmap -A <target>` | Chế độ quét chuyên sâu tổng hợp các thông tin về (OS), (Version) và (Traceroute). |
+
+### D. Chỉ định cổng
+
+| Câu lệnh | Mô tả |
+|-----------|-------|
+| `nmap -p 80 <target>` | Chỉ thực hiện quét trên cổng 80. |
+| `nmap -p 1-1024 <target>` | Quét dải cổng từ 1 đến 1024. |
+| `nmap -p- <target>` | Thực hiện quét toàn bộ dải cổng hệ thống gồm 65.535 cổng. |
+| `nmap -F <target>` | Chế độ quét nhanh 100 cổng phổ biến nhất. |
+| `nmap --top-ports 20 <target>` | Quét các cổng có xác suất hoạt động cao nhất. |
+
+### E. Hiệu suất và Thời gian
+
+| Câu lệnh | Mô tả |
+|-----------|-------|
+| `nmap -T4 <target>` | Thiết lập tốc độ quét tối ưu cho hạ tầng ổn định. |
+| `nmap -T1 <target>` | Thiết lập tốc độ quét chậm nhằm tránh sự nhận diện của (IDS). |
+| `nmap --max-retries 2 <target>` | Giới hạn số lần thử lại đối với mỗi gói tin phản hồi chậm. |
+| `nmap --min-rate 300 <target>` | Đảm bảo tần suất gửi gói tin tối thiểu mỗi giây. |
+
+### F. Vượt rào cản an ninh
+
+| Câu lệnh | Mô tả |
+|-----------|-------|
+| `nmap -f <target>` | Thực hiện phân đoạn các gói tin (IP) nhằm vượt qua hệ thống (IPS). |
+| `nmap -D RND:10 <target>` | Sử dụng các địa chỉ IP giả mạo để phân tán khả năng phân tích của (IDS). |
+| `nmap -S <Fake_IP> <target>` | Giả mạo địa chỉ IP nguồn thực thi lệnh. |
+| `nmap -g 53 <target>` | Cố định cổng nguồn gửi dữ liệu từ cổng 53 của (DNS). |
+| `nmap --data-length 25 <target>` | Chèn dữ liệu ngẫu nhiên để thay đổi đặc tính gói tin. |
+
+### G. Quản lý đầu ra
+
+| Câu lệnh | Mô tả |
+|-----------|-------|
+| `nmap -oN output.txt <target>` | Xuất kết quả dưới định dạng văn bản tiêu chuẩn. |
+| `nmap -oX output.xml <target>` | Xuất kết quả dưới định dạng (XML) để tích hợp hệ thống. |
+| `nmap -oA scan_result <target>` | Xuất đồng thời các định dạng (Normal), (XML) và (Grepable). |
+| `nmap -vv <target>` | Hiển thị thông tin thực thi ở mức độ chi tiết tối đa. |
+| `nmap --reason <target>` | Giải thích căn cứ kỹ thuật để xác định trạng thái của cổng. |
+
+## 7. Tài liệu tham khảo
+
+Để nâng cao kỹ năng sử dụng Nmap chuyên nghiệp, có thể tìm hiểu thêm tại:
+
+- **[Nmap Official Documentation](https://nmap.org/book/)**: Tài liệu học thuật từ nhóm phát triển.
+- **[TryHackMe Nmap Room](https://tryhackme.com/room/furthernmap)**: Hệ thống phòng thực hành cấu trúc gói tin.
+
+<Alert type="warning">
+Nmap là công cụ mạnh mẽ đòi hỏi sự thận trọng và trách nhiệm cao. Việc thực thi lệnh đòi hỏi sự tuân thủ nghiêm ngặt các quy định pháp luật và đạo đức nghề nghiệp. Chỉ thực hiện quét trên các hệ thống được cấp phép chính thức.
+</Alert>

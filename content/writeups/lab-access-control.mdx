@@ -1,0 +1,237 @@
+---
+title: "Access Control Labs — PortSwigger Web Security Academy"
+description: "Hướng dẫn giải chi tiết các bài lab về lỗ hổng Access Control trên PortSwigger — từ IDOR, leo quyền bằng cookie/parameter, bypass URL-based và method-based access control, đến multi-step process và Referer-based access control."
+date: "2026-05-06"
+category: "writeup"
+tags: ["access-control", "idor", "privilege-escalation", "portswigger", "writeup", "web-security"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: Unprotected admin functionality
+Nhiệm vụ của bài lab này là tìm ra trang admin panel và thực hiện xoá tài khoản người dùng calos.
+
+![image1.png](/images/writeups/lab-access-control/image1.png)
+
+Thông thường những endpoint ẩn thường được dev giấu trong /robots.txt. Ta sẽ thử vào mục này của trang web
+
+![image2.png](/images/writeups/lab-access-control/image2.png)
+
+Đã phát hiện ra endpoint admin-panel. Ta sẽ truy câp endpoint này để vào trang admin và thực hiện xoá tài khoản calos -> slolve lab.
+
+![image3.png](/images/writeups/lab-access-control/image3.png)
+
+## Lab 2: Unprotected admin functionality with unpredictable URL
+Nhiệm vụ của lab này vẫn là tìm ra trang admin panel và thực hiện xoá tài khoản người dùng calos. Lần này endpoint ẩn được giấu trong source code của web.
+
+![image4.png](/images/writeups/lab-access-control/image4.png)
+
+Ta sẽ truy câp endpoint này để vào trang admin và thực hiện xoá tài khoản calos -> slolve lab.
+
+![image5.png](/images/writeups/lab-access-control/image5.png)
+
+## Lab 3: User role controlled by request parameter
+Trang web này có trang quản trị viên /admin, mục tiêu của ta là truy cập vào đó và xoá tài khoản calos.
+
+![image6.png](/images/writeups/lab-access-control/image6.png)
+
+Tuy nhiên ta không thể truy cập vào thông qua url do chưa đủ quyền hạn
+
+![image7.png](/images/writeups/lab-access-control/image7.png)
+
+Trong burp, request /admin của ta có một trường nhạy cảm mang tên Cookie: Admin=false.
+
+![image8.png](/images/writeups/lab-access-control/image8.png)
+
+Cokkie này xác định quyền hạn của người dụng thông thường, nhưng nếu ta thay đổi giá trị đó thì sao ?
+Thực hiện điều này trong repeater của burp suite.
+
+![image9.png](/images/writeups/lab-access-control/image9.png)
+
+Khai thác thành công. Truy cập vào trang admin và xoá tài khoản calos  solve lab.
+
+![image10.png](/images/writeups/lab-access-control/image10.png)
+
+![image11.png](/images/writeups/lab-access-control/image11.png)
+
+## Lab 4: User role can be modified in user profile
+
+![image12.png](/images/writeups/lab-access-control/image12.png)
+
+Mục tiêu của bài lab này là truy cập vào trang admin và xoá tài khoản calos. Trang web có chức năng thay đổi mail.
+
+![image13.png](/images/writeups/lab-access-control/image13.png)
+
+Trong response của request thay đổi mail này, có một trường roleid:1.
+
+![image14.png](/images/writeups/lab-access-control/image14.png)
+
+Trang admin cần roleid=2 để có thể truy cập. Vậy ta có thể thay đổi trường này thông qua lỗi access control không.
+Thực hiện điều đó bằng chèn roleid=2 vào request và gửi lại.
+
+![image15.png](/images/writeups/lab-access-control/image15.png)
+
+Vậy ta đã thay đổi được quyền hạn, vào admin panel và xoá tài khoản calos -> solve lab.
+
+![image16.png](/images/writeups/lab-access-control/image16.png)
+
+## Lab 5: User ID controlled by request parameter
+Mục tiêu của bài lab là lấy được khoá API của carlos thông qua lỗi access control.
+
+![image17.png](/images/writeups/lab-access-control/image17.png)
+
+Để lấy đc API, ra sẽ thay đổi các trường định danh không được bảo vệ an toàn ( IDOR ).
+Ở đây là trường id trong Request Line. Thay đổi nó thành carlos và ta sẽ lấy đc API -> slove lab. Đây là lỗi IDOR.
+
+![image18.png](/images/writeups/lab-access-control/image18.png)
+
+![image19.png](/images/writeups/lab-access-control/image19.png)
+
+## Lab 6: User ID controlled by request parameter, with unpredictable user IDs
+Trong bài lab này, định danh người dùng được xác định thông qua tham số GUID, là một chuỗi ngẫu nhiên để tránh chúng ta brute force. Mục tiêu vẫn là tìm ra API của carlos.
+
+![image20.png](/images/writeups/lab-access-control/image20.png)
+
+Tuy nhiên trang web này vẫn bị IDOR. Hệ thống chỉ kiểm tra xem GUID đó có tồn tại hay không mà không kiểm tra xem GUID đó có thuộc về người dùng đang đăng nhập hay không, ta có thể truy cập thông tin của bất kỳ ai nếu biết được GUID của họ.
+Ta không thể đoán được GUID của carlos, vậy ta cần tìm ra một nơi nó bị tiết lộ.
+Truy cập vào phần bog, ta thấy mỗi blog đều có một người đăng tải.
+
+![image21.png](/images/writeups/lab-access-control/image21.png)
+
+Vì web bị IDOR, nên ta sẽ thay đổi trường postID để tìm ra bài viết của carlos.
+
+![image22.png](/images/writeups/lab-access-control/image22.png)
+
+Đã tìm thấy !
+Trong burp, phần response của yêu cầu này ta thấy GUID bị công khai thông qua tính năng xem danh sách bài viết của một tác giả.
+
+![image23.png](/images/writeups/lab-access-control/image23.png)
+
+Thay đổi GUID, ta sẽ vào được tài khoản carlos và lấy được API Key -> solve lab.
+
+![image24.png](/images/writeups/lab-access-control/image24.png)
+
+## Lab 7: User ID controlled by request parameter with data leakage in redirect
+Trang web lần này đã có sự phòng vệ nhất định, khi ta thay đổi trường id thành carlos thì bị redirect về login với phản hồi 302.
+
+![image25.png](/images/writeups/lab-access-control/image25.png)
+
+Tuy nhiên trong trường hợp này, lập trình viên đã để lại dữ liệu nhạy cảm ( toàn bộ trang web ) trong phần Body của phản hồi 302 đó. Ta sẽ xem được dữ liệu lẽ ra đã bị chặn đó bằng burp suite
+
+![image26.png](/images/writeups/lab-access-control/image26.png)
+
+Nộp API key, solve lab.
+
+![image27.png](/images/writeups/lab-access-control/image27.png)
+
+## Lab 8: User ID controlled by request parameter with password disclosure
+Trang web lần này cho phép update mail và mật khẩu của người dùng. Mục tiêu là lấy được mật khẩu admin, đăng nhập và xoá tài khoản người dùng carlos.
+
+![image28.png](/images/writeups/lab-access-control/image28.png)
+
+Ta sẽ test xem trang web bị IDOR hay không bằng cách thay đổi trường id thành administrator.
+
+![image29.png](/images/writeups/lab-access-control/image29.png)
+
+Đã truy cập thành công vào trang admin. Dù mật khẩu đã bị ẩn đi, nhưng nó vẫn hiện rõ ở trong phản hồi của burp.
+
+![image30.png](/images/writeups/lab-access-control/image30.png)
+
+Mật khẩu là 9tbm2m3qoxmibqgi3fu1. Đăng nhập và xoá tài khoản carlos
+
+![image31.png](/images/writeups/lab-access-control/image31.png)
+
+## Lab 9: Insecure direct object references
+Trang web này lưu trữ cuộc trò chuyện của người dùng trực tiếp trên máy chủ và có thể truy xuất chúng bằng các URL tĩnh. Mục tiêu của lab là lấy được mật khẩu của carlos và đăng nhập.
+
+![image32.png](/images/writeups/lab-access-control/image32.png)
+
+![image33.png](/images/writeups/lab-access-control/image33.png)
+
+Thay vì sử dụng định danh ngẫu nhiên cho tên tệp chat, hệ thống lại sử dụng tên tệp tăng dần theo số tự tự, rất dễ đoán.
+
+![image34.png](/images/writeups/lab-access-control/image34.png)
+
+Vậy điều gì xảy ra nếu trang web bị IDOR ở phần này, ta sẽ thử điều này bằng cách thay đổi số thứ tự tệp để lấy những đoạn chat của những người dùng khác.
+
+![image35.png](/images/writeups/lab-access-control/image35.png)
+
+Với tệp mang số thứ tự 1, ta đã truy xuất thành công đoạn chat có chứa thông tin nhạy cảm ( mật khẩu của carlos ). Tiến hành đăng nhập vào carlos và solve lab.
+
+![image36.png](/images/writeups/lab-access-control/image36.png)
+
+## Lab 10: URL-based access control can be circumvented
+Mục tiêu của lab là xoá được tài khoản carlos bằng admin.
+
+![image37.png](/images/writeups/lab-access-control/image37.png)
+
+Hệ thống có tồn tại endpoint /admin, nhưng khi truy cập vào thì bị block.
+
+![image38.png](/images/writeups/lab-access-control/image38.png)
+
+Điều này cho thấy hệ thống font-end đã ngăn chặn việc truy cập này, vậy có cách nào để làm cho một truy cập hợp lệ nhưng lại bị điều hướng sang một endpoint nhạy cảm hay không.
+Ở một số framework PHP có trường X-Original-URL. Khi gửi request, back-end sẽ nhìn vào đây để truy cập thay vì truy cập theo URL.
+Vậy ta sẽ thêm trường X-Original-URL vào trong một request hợp lệ bất kỳ, ở đây là /my-account.
+
+![image39.png](/images/writeups/lab-access-control/image39.png)
+
+Khai thác thành công, đã bypass được hệ thống. Thực hiện xoá tài khoản carlos và solve lab.
+
+![image40.png](/images/writeups/lab-access-control/image40.png)
+
+![image41.png](/images/writeups/lab-access-control/image41.png)
+
+## Lab 11: Method-based access control can be circumvented
+Mục tiêu của challenge này là nâng quyền tài khoản wiener lên admin. Trang web cung cấp tài khoản admin để ta vào xem cơ chế nâng quyền và hạ quyền các tài khoản người dùng do admin quản lý.
+
+![image42.png](/images/writeups/lab-access-control/image42.png)
+
+Khi nâng quyền hoặc hạ quyền một tài khoản, request tương ứng sẽ là
+
+![image43.png](/images/writeups/lab-access-control/image43.png)
+
+Vì đây là post request, nên ta không thể thực hiện thao tác này với tào khoản người dùng do ko kiểm soát được trường action ( nằm trong body ). Trang web đang chặn post request, vậy còn GET request thì sao ?
+Ta sẽ chuyển POST sang GET request bằng burp suite và gửi lại trong repeater.
+
+![image44.png](/images/writeups/lab-access-control/image44.png)
+
+Lỗi Unauthorized cho thấy đã bypass được hệ thống nhưng cokkie đăng nhập này là của admin không phải wiener. Ta cần thay nó bằng cokkie của wiener ( lấy trong request sau khi đăng nhập bằng wiener ).
+
+![image45.png](/images/writeups/lab-access-control/image45.png)
+
+Thay vào request và gửi lại.
+
+![image46.png](/images/writeups/lab-access-control/image46.png)
+
+Nâng quyền thành công -> solve lab.
+
+![image47.png](/images/writeups/lab-access-control/image47.png)
+
+## Lab 12: Multi-step process with no access control on one step
+Ở thử thách này, mục tiêu vẫn là nâng quyền lên admin.
+Trang web có thêm cơ chế xác minh 2 bước
+
+![image48.png](/images/writeups/lab-access-control/image48.png)
+
+![image49.png](/images/writeups/lab-access-control/image49.png)
+
+Ta sẽ bắt request tương ứng ở bước thứ 2, thay các trường cokkie và username của wiener và gửi lại request này trong repeater.
+
+![image50.png](/images/writeups/lab-access-control/image50.png)
+
+Khai thác thành công -> solve lab.
+
+![image51.png](/images/writeups/lab-access-control/image51.png)
+
+## Lab 13: Referer-based access control
+Mục tiêu của bài lab này vẫn là nâng quyền từ wiener lên admin. Cơ chế ủy quyền của ứng dụng chỉ kiểm tra xem yêu cầu có đến từ trang quản trị hay không thông qua tiêu đề Referer: .../admin.
+
+![image52.png](/images/writeups/lab-access-control/image52.png)
+
+Ta sẽ thực hiên khai thác giống như bài lab trước, thay cookie và username của wiener vào một request nâng quyền bất kỳ của admin và gửi lại request này trong repeater.
+
+![image53.png](/images/writeups/lab-access-control/image53.png)
+
+Nâng quyền thành công, ta solve được bài lab cuối cùng trong chủ đề này. !
+
+![image54.png](/images/writeups/lab-access-control/image54.png)

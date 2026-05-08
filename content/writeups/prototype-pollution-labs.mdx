@@ -1,0 +1,276 @@
+---
+title: "Prototype Pollution Labs — PortSwigger Web Security Academy"
+description: "Writeup 9 bài lab Prototype Pollution trên PortSwigger: từ Client-side DOM XSS, bypass sanitization, thư viện bên thứ 3, đến Server-side privilege escalation và RCE qua child_process."
+date: "2026-04-28"
+category: "writeup"
+tags: ["prototype-pollution", "javascript", "xss", "rce", "portswigger", "burp-suite", "dom-invader"]
+thumbnail: ""
+external_link: "https://portswigger.net/web-security/prototype-pollution"
+---
+
+## Lab 1: Client-side Prototype Pollution via Browser APIs
+
+Mục tiêu của bài lab này là kích hoạt được JS thông qua XSS DOM bằng cách khai thác lỗi **prototype pollution**.
+
+Đầu tiên ta thực hiện kiểm tra xem trang web có cho ta chèn thêm một thuộc tính vào nguyên mẫu (prototype) hay không bằng payload **`/?__proto__[test]=aaa`** được inject vào URL (thuộc tính với key = test và value = aaa)
+
+![Inject payload vào URL](/images/writeups/prototype-pollution-labs/image1.png)
+
+Sau đó, ta vào console để kiểm tra bằng truy vấn **`Object.prototype.test`**
+
+![Kiểm tra Object.prototype.test trên console](/images/writeups/prototype-pollution-labs/image2.png)
+
+Truy vấn thành công!
+
+Ở mô tả lab, có cụm "các nhà phát triển trang web đã phát hiện ra một lỗ hổng tiềm tàng và đã cố gắng vá nó", vậy họ đã vá ở đâu? Kiểm tra trong phần Source, ta thấy file `resources/js/searchLoggerConfigurable.js` có một đoạn sàng lọc.
+
+```javascript
+Object.defineProperty(config, 'transport_url', {
+	configurable: false, //Không được sửa
+	writable: false //Không được ghi
+          // Họ QUÊN không ghi mục 'value' ở đây
+});
+```
+
+Đoạn mã này nhằm thiết lập các quyền cho thuộc tính `'transport_url'` của đối tượng "config". Nhưng dev đã quên không thiết lập value cho thuộc tính này!
+
+Nếu `value: "google.com"`, thì khi gọi `config.transport_url`, kết quả trả về sẽ là `"google.com"`
+
+Vì thế, khi một đối tượng không có value, nó sẽ gọi lên nguyên mẫu (prototype) để tìm giá trị này.
+
+Sink ở đây là `config.transport_url`. Khi mã nguồn của trang web thực hiện tạo một thẻ script: `script.src = config.transport_url`, lúc này, `config.transport_url` sẽ lấy giá trị từ `Object.prototype.value` và chạy nó.
+
+Ví dụ: `<script src="https://website.com/script.js"></script>`
+
+Vậy ta chỉ cần chèn đoạn JS vào giá trị "value" của nguyên mẫu (prototype), để cho `config.transport_url` gọi đến nó là thực thi đoạn JS bất kì (ở đây là `alert(1)`)
+
+![Payload inject value vào prototype](/images/writeups/prototype-pollution-labs/image3.png)
+
+`data:,alert(1);` là syntax của `script.src` → `data:[media_type][;base64],<data>`
+
+Enter và hoàn thành bài lab!
+
+![Lab hoàn thành](/images/writeups/prototype-pollution-labs/image4.png)
+
+---
+
+## Lab 2: DOM XSS via Client-side Prototype Pollution
+
+Mục tiêu của lab này vẫn là thực thi được JS thông qua lỗi **prototype pollution**. Trước hết, ta kiểm tra xem trang web có cho phép chèn thuộc tính vào prototype hay không.
+
+![Kiểm tra prototype pollution](/images/writeups/prototype-pollution-labs/image5.png)
+
+Hoàn toàn được. Tiếp theo, ta cần xác định xem thuộc tính nào của prototype sẽ được gọi bởi các đối tượng con, và lời gọi ấy có cho phép thực thi được JS hay không?
+
+Đọc source của trang web, ta thấy một đoạn JS khả nghi trong `resources/js/searchLogger.js`
+
+![Source code searchLogger.js](/images/writeups/prototype-pollution-labs/image6.png)
+
+Hàm `searchLogger()` khai báo một đối tượng config với bộ key (params) và value là phần còn lại.
+
+Nhưng phía dưới lại có câu lệnh kiểm tra về thuộc tính `transport_url`, thuộc tính này vốn dĩ không tồn tại trong đối tượng config. Vậy khi được gọi, nó sẽ gọi lên prototype để tìm thuộc tính đó. Nếu ta chèn được thuộc tính này vào prototype với giá trị là đoạn JS thì sẽ thực thi được đoạn mã đó thông qua sink **`document.body.appendChild(script);`**
+
+![Khai thác thành công DOM XSS](/images/writeups/prototype-pollution-labs/image7.png)
+
+---
+
+## Lab 3: DOM XSS via an Alternative Prototype Pollution Vector
+
+Ở thử thách này, trang web đã không cho phép ta chèn thuộc tính vào prototype theo syntax cũ
+
+![Bracket notation bị chặn](/images/writeups/prototype-pollution-labs/image8.png)
+
+Vậy còn những syntax nào có thể làm được việc này?
+
+Trong JS có 2 cách để truy cập một thuộc tính của một đối tượng, đó là **Dot Notation** (Sử dụng dấu chấm) và **Bracket Notation** (Sử dụng ngoặc vuông).
+
+Sử dụng Dot Notation, ta đã chèn được thuộc tính thành công vào prototype.
+
+![Dot notation thành công](/images/writeups/prototype-pollution-labs/image9.png)
+
+Kiểm tra trong source code của web, tại file `resources/js/searchLoggerAlternative.js`
+
+![Source code searchLoggerAlternative.js](/images/writeups/prototype-pollution-labs/image10.png)
+
+Đọc đoạn code, ta thấy một sink nguy hiểm là `eval()`, nó thực thi `manager.sequence`, vậy ta có thể kiểm soát được giá trị này không?
+
+Ta có thể thao túng thuộc tính `sequence` của đối tượng `manager` thông qua prototype như các challenge trước.
+
+![Thử inject sequence](/images/writeups/prototype-pollution-labs/image11.png)
+
+Nhưng lần này, ta không thể thực thi JS, giá trị của sequence đã bị nối bởi một số 1 đằng sau, khiến cho cú pháp bị sai. Đây là ảnh hưởng của câu lệnh `let a = manager.sequence || 1;` nó sẽ mặc định sequence là 1 nếu như trước đó thuộc tính này chưa có giá trị nào.
+
+Từ đây, ta bổ sung vào payload một dấu trừ để hợp lệ hoá câu lệnh JS (`alert(1)-1` → câu lệnh này sẽ thực thi alert sau đó đem kết quả trừ cho 1, phía dưới là ví dụ)
+
+![Ví dụ alert(1)-1](/images/writeups/prototype-pollution-labs/image12.png)
+
+![Khai thác thành công với dấu trừ](/images/writeups/prototype-pollution-labs/image13.png)
+
+---
+
+## Lab 4: Client-side Prototype Pollution via Flawed Sanitization
+
+Ở thử thách này, trang web đã ngăn chặn việc chèn thuộc tính vào prototype bằng cả 2 cách là **Dot Notation** (Sử dụng dấu chấm) và **Bracket Notation** (Sử dụng ngoặc vuông).
+
+![Cả 2 notation đều bị chặn](/images/writeups/prototype-pollution-labs/image14.png)
+
+Tiếp tục vào source code, ta thấy trong file `resources/js/searchLoggerFiltered.js` có một đoạn chứa sink nguy hiểm. `document.body.appendChild(script)` sẽ thực thi đoạn JS trong thuộc tính `transport_url` của đối tượng config.
+
+![Source code searchLoggerFiltered.js](/images/writeups/prototype-pollution-labs/image15.png)
+
+Khi đối tượng config được tạo, nó chỉ có một thuộc tính là params, nhưng ở dưới lại có câu lệnh điều kiện kiểm tra thuộc tính `transport_url`. Trong trường hợp đó, config sẽ gọi ngược lên prototype.
+
+Nhưng trang web đang cấm việc tác động lên prototype. Đoạn code nào đã làm việc này?
+
+Trong file `searchLoggerFiltered.js`, ta thấy một đoạn code sanitization.
+
+![Đoạn code sanitization](/images/writeups/prototype-pollution-labs/image16.png)
+
+Nó đang thay thế chuỗi `__proto__` bằng ký tự rỗng, nhưng ta có thể dễ dàng vượt qua bộ lọc này bằng phương pháp recursive removal (loại bỏ đệ quy). Nếu ta gửi chuỗi `__pro__proto__to__`, sau khi lọc, nó sẽ trở thành `__proto__`.
+
+Áp dụng điều trên vào payload với thuộc tính `transport_url` của prototype
+
+![Bypass sanitization thành công](/images/writeups/prototype-pollution-labs/image17.png)
+
+---
+
+## Lab 5: Client-side Prototype Pollution in Third-party Libraries
+
+Ở challenge này, trang web bị dính lỗi **prototype pollution** bởi một thư viện bên thứ 3. Vì vậy ta không thể dễ dàng khai thác bằng cách thông thường, thay vào đó ta sẽ sử dụng DOM Invader được tích hợp sẵn trong Burp Suite.
+
+Sau khi bật DOM Invader và reload lại trang web, ta phát hiện có 2 cách để chèn một thuộc tính vào prototype, property ở đây tượng trưng cho tên một thuộc tính bất kỳ.
+
+![DOM Invader phát hiện source](/images/writeups/prototype-pollution-labs/image18.png)
+
+Ta ấn scan.
+
+![DOM Invader scan](/images/writeups/prototype-pollution-labs/image19.png)
+
+Khi ta ấn scan, DOM Invader sẽ brute force, thay hàng trăm giá trị vào property để test xem, với cái tên nào thì sẽ thực thi được mã JS, mã JS ở đây được DOM sử dụng đó là `alert(1)`
+
+Ta thấy DOM đã tìm ra tên của thuộc tính nguy hiểm đó, đó là "hitCallback", ấn exploit để thực hiện khai thác
+
+![DOM Invader tìm ra hitCallback](/images/writeups/prototype-pollution-labs/image20.png)
+
+Vậy là ta đã khai thác thành công, tiếp theo ta chuyển hướng sang exploit server và thực hiện tạo payload để gửi cho nạn nhân với JS là `alert(document.cookie)`
+
+![Payload trên exploit server](/images/writeups/prototype-pollution-labs/image21.png)
+
+![Khai thác thành công](/images/writeups/prototype-pollution-labs/image22.png)
+
+---
+
+## Lab 6: Privilege Escalation via Server-side Prototype Pollution
+
+Trang web ở challenge này có chức năng cập nhật thông tin thanh toán và địa chỉ giao hàng. Khi ta ấn submit, trong Burp xuất hiện POST request với end point `/my-account/change-address`.
+
+![Giao diện cập nhật thông tin](/images/writeups/prototype-pollution-labs/image23.png)
+
+![POST request trong Burp](/images/writeups/prototype-pollution-labs/image24.png)
+
+Dữ liệu được truyền đi và nhận lại dưới dạng JSON, với trường định danh quan trọng `isAdmin=false`.
+
+Đây là các thuộc tính của User được gửi đi và server đã lưu lại, vậy sẽ ra sao nếu ta gửi đi một thuộc tính không thuộc User mà thuộc prototype?
+
+Thử điều này thông qua `__proto__`:
+
+![Inject thuộc tính qua __proto__](/images/writeups/prototype-pollution-labs/image25.png)
+
+Như vậy, ta đã thêm một thuộc tính thành công vào user thông qua prototype, vậy ta có thể thay đổi thuộc tính nhạy cảm `isAdmin` theo cách này hay không?
+
+![Thay đổi isAdmin thành công](/images/writeups/prototype-pollution-labs/image26.png)
+
+Thay đổi thành công!
+
+![Admin panel xuất hiện](/images/writeups/prototype-pollution-labs/image27.png)
+
+Như vậy là ta đã nâng được quyền hạn của User wiener lên admin, trên thanh công cụ xuất hiện Admin panel, ta sẽ thực hiện xoá tài khoản carlos và hoàn thành bài lab.
+
+![Xoá tài khoản carlos](/images/writeups/prototype-pollution-labs/image28.png)
+
+---
+
+## Lab 7: Detecting Server-side Prototype Pollution without Polluted Property Reflection
+
+Trang web ở challenge này được thiết kế giống hệt như thử thách trước, nhưng trong phản hồi của server đã không hiển thị các thuộc tính mà ta inject vào prototype.
+
+Để xác định xem trang web có lỗi **prototype pollution** hay không, ta cần xác định xem server sẽ xử lý những thuộc tính nào khi có lỗi xảy ra ở request. Ở đây là sẽ làm hỏng request bằng cách xoá một dấu phẩy.
+
+![Làm hỏng request để detect](/images/writeups/prototype-pollution-labs/image29.png)
+
+Vậy là thuộc tính `foo` ban đầu ta inject đã được hiển thị.
+
+Để ý thấy trong phản hồi có thuộc tính `status`. Đây là code phản hồi từ server, ta có thể thay đổi giá trị này theo cách trên. Thực hiện một cú pháp inject đúng:
+
+```json
+"__proto__": {
+        "foo": "bar",
+        "status": 511
+    }
+```
+
+Sau đó làm hỏng cú pháp để server phản hồi, khi này, thuộc tính `status` đã thực sự bị thay đổi.
+
+![Status bị thay đổi thành 511](/images/writeups/prototype-pollution-labs/image30.png)
+
+Vậy là ta đã làm sai lệch được prototype theo một hướng khác ("làm lỗi request") — DONE LAB!
+
+![Lab hoàn thành](/images/writeups/prototype-pollution-labs/image31.png)
+
+---
+
+## Lab 8: Bypassing Flawed Input Filters for Server-side Prototype Pollution
+
+Ở thử thách này, ta không thể inject thuộc tính vào prototype thông qua `"__proto__"`. Có vẻ như server đã filter từ khoá này.
+
+![__proto__ bị filter](/images/writeups/prototype-pollution-labs/image32.png)
+
+Vậy, ngoài cách sử dụng `__proto__`, ta còn những cách nào khác?
+
+Sau khi tra cứu, ta được biết còn những cách khác để thao túng được `Object.prototype`, một trong số đó là `constructor.prototype`.
+
+Vậy ta sẽ áp dụng cách này vào request.
+
+![constructor.prototype thành công](/images/writeups/prototype-pollution-labs/image33.png)
+
+Khai thác thành công! Tiếp đến ta chỉ việc đổi giá trị nhạy cảm `isAdmin`.
+
+Vào panel của Admin và xoá account carlos, ta sẽ hoàn thành bài lab này.
+
+![Đổi isAdmin và xoá carlos](/images/writeups/prototype-pollution-labs/image34.png)
+
+![Admin panel](/images/writeups/prototype-pollution-labs/image35.png)
+
+![Lab hoàn thành](/images/writeups/prototype-pollution-labs/image36.png)
+
+---
+
+## Lab 9: Remote Code Execution via Server-side Prototype Pollution
+
+Mục tiêu của bài lab này là xoá được tệp tin `/home/carlos/morale.txt` trên server. Trang web được thiết kế giống như challenge trước và ta có thể tham chiếu được prototype thông qua `constructor.prototype`.
+
+![Xác nhận constructor.prototype hoạt động](/images/writeups/prototype-pollution-labs/image37.png)
+
+Trang web có một admin panel với chức năng là dọn dẹp cơ sở dữ liệu và hệ thống tập tin.
+
+![Admin panel chức năng bảo trì](/images/writeups/prototype-pollution-labs/image38.png)
+
+![POST /admin/jobs request](/images/writeups/prototype-pollution-labs/image39.png)
+
+Chức năng này được kích hoạt thông qua một đoạn JS với cú pháp `node <script_bao_tri.js>`
+
+Vậy sink đang nằm ở đây, ta sẽ ép chương trình này chạy thêm một đoạn lệnh con do ta tuỳ biến thông qua thuộc tính `"execArgv"` (execArgv là danh sách các tùy chọn được truyền vào trước tên file script khi một tiến trình được thực thi).
+
+Thực hiện chèn thuộc tính này vào prototype để khi chương trình JS của user thực hiện bảo trì, nó sẽ kế thừa `"execArgv"` và thực thi những tuỳ chọn độc hại này ngoài việc chạy chương trình chính bảo trì.
+
+![Inject execArgv vào prototype](/images/writeups/prototype-pollution-labs/image40.png)
+
+Inject thành công! Cuối cùng ta sẽ sử dụng chức năng bảo trì để hệ thống thực hiện bảo trì và chạy đoạn mã "child_process" độc hại này. Xoá file thành công và hoàn thành lab.
+
+![Kết quả child_process](/images/writeups/prototype-pollution-labs/image41.png)
+
+![Lab hoàn thành — RCE thành công](/images/writeups/prototype-pollution-labs/image42.png)
+
+Yêu cầu `POST /admin/jobs` cho thấy hệ thống đang sử dụng **Child Process** để thực hiện các tác vụ quản trị như dọn dẹp cơ sở dữ liệu và tệp tin.
+
+Việc tác vụ `fs-cleanup` báo lỗi `code: 1` là dấu hiệu cấu hình đã bị thay đổi, cho phép ta chèn tham số độc hại vào `execArgv` thông qua **Prototype Pollution** để chiếm quyền điều khiển máy chủ (RCE).

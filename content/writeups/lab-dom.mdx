@@ -1,0 +1,223 @@
+---
+title: "DOM-based Labs — PortSwigger Web Security Academy"
+description: "Hướng dẫn giải chi tiết các bài lab về lỗ hổng DOM-based trên PortSwigger — từ DOM XSS qua web messages, khai thác JSON.parse, open redirection, cookie manipulation đến DOM clobbering."
+date: "2026-05-07"
+category: "writeup"
+tags: ["dom", "xss", "dom-xss", "dom-clobbering", "portswigger", "writeup", "web-security"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: DOM XSS using web messages
+
+Mục tiêu của bài lab này là kích hoạt được hàm `print()`.
+
+![image1.png](/images/writeups/lab-dom/image1.png)
+
+Trong source code của trang web, có một file JS có nhiệm vụ thiết lập một kênh truyền tin thời gian thực (WebSocket) để cập nhật tiêu đề (header) của trang web một cách tự động mà không cần tải lại trang.
+
+![image2.png](/images/writeups/lab-dom/image2.png)
+
+Ở đây có một hàm nguy hiểm đó là `innerHTML`.
+
+![image3.png](/images/writeups/lab-dom/image3.png)
+
+Nó lấy dữ liệu (`evt.data`) nhận được từ server (hoặc thông qua các kỹ thuật tiêm tin nhắn) và render thành HTML. Vậy nếu ta có thể ép ứng dụng nhận vào một đoạn tin nhắn JS, trình duyệt sẽ thực thi đoạn code đó ngay lập tức.
+
+Chuyển sang máy chủ khai thác và nhập payload vào phần thân của request.
+
+```html
+<iframe src="https://0a0800ea044a5f9c800a0d9000fb007c.web-security-academy.net/" onload="this.contentWindow.postMessage('<img src=x onerror=print()>','*')"></iframe>
+```
+
+Đoạn mã trên sử dụng `<iframe>` để nhúng vào trang mục tiêu, lợi dụng việc thiếu kiểm tra Origin để gửi payload `<img src=x onerror=print()>` qua `postMessage` ngay khi trang tải xong, khiến script của mục tiêu nhận dữ liệu và đưa thẳng vào sink nguy hiểm `innerHTML`, từ đó kích hoạt lỗi tải ảnh và thực thi hàm `print()`.
+
+![image4.png](/images/writeups/lab-dom/image4.png)
+
+## Lab 2: DOM XSS using web messages and a JavaScript URL
+
+Mục tiêu của bài lab này là gọi được hàm `print()`.
+
+Trong file index của trang wen có chứa một đoạn script.
+
+![image5.png](/images/writeups/lab-dom/image5.png)
+
+```html
+<script>
+window.addEventListener('message', function(e) {
+    var url = e.data;
+    if (url.indexOf('http:') > -1 || url.indexOf('https:') > -1) {
+        location.href = url;
+    }
+}, false);
+</script>
+```
+
+Đoạn mã này sẽ lắng nghe các message được gửi đến mà không kiểm tra nguồn gốc của chúng, mục tiêu là giúp chuyển hướng linh hoạt dựa trên tin nhắn nhận được từ bên ngoài thông qua sink `location.href`. Dòng `var url = e.data` cho thấy dữ liệu nhận vào đến từ URL, ta hoàn toàn có thể kiểm soát giá trị này.
+
+Đoạn scripts sử dụng một cơ chế Sanitization dữ liệu ở dòng `if (url.indexOf('http:') > -1 || url.indexOf('https:') > -1)` chỉ cho phép input là url có tiêu đề http://...  và https://... Nhưng nó lại dùng hàm `indexOf` ( hàm này check nếu cụm http/https, tồn tại ở trong URL thì coi là hợp lệ ). Đây là lỗ hổng vì nó chấp nhận payload `javascript:print()//http:` ( vì vẫn tồn tại cụm http )
+
+Chuyển sang máy chủ khai thác và nhập payload sau vào body request.
+
+```html
+<iframe src="https://YOUR-LAB-ID.web-security-academy.net/" onload="this.contentWindow.postMessage('javascript:print()//http:','*')">
+```
+
+Payload này sử dụng "//" để vô hiệu hoá phần còn lại ( trong đó có chuỗi http bypass bộ lọc ), ký tự "*" cho biết payload sẽ được gửi đến bất cứ trang web nào ở trong iframe. ( cú pháp: `postMessage(message, targetOrigin)` ).
+
+![image6.png](/images/writeups/lab-dom/image6.png)
+
+## Lab 3: DOM XSS using web messages and JSON.parse
+
+Mục tiêu của bài lab này vẫn là chạy được hàm `print()`. Nhưng đoạn scripts trong mã nguồn của trang web đã có sự thay đổi.
+
+![image7.png](/images/writeups/lab-dom/image7.png)
+
+Đoạn mã này sẽ nhận dữ liệu dưới dạng JSON và giải mã nó thông qua hàm `JSON.prase(e.data)`
+
+Tuỳ vào nội dung tin nhắn, nó sẽ thực hiện các việc như:
+
+- **page-load:** Cuộn trang đến vị trí  iframe.
+- **load-channel:** Thay đổi đường dẫn (src) của iframe.
+- **player-height-changed:** Thay đổi kích thước khung.
+
+Tuy nhiên ở đây có một sink nguy hiểm là `ACMEplayer.element.src`, giá trị `d.url` từ tin nhắn được gán trực tiếp vào thuộc tính `src` của một iframe. Nếu ta gửi một chuỗi không phải là url, mà là một đoạn JS thì trình duyệt sẽ thực thi nó thay vì tải một trang web. Đây là lỗ hổng DOM-based XSS.
+
+```html
+<iframe src="https://YOUR-LAB-ID.web-security-academy.net/" id="target" onload="exploit()"></iframe>
+<script>
+function exploit() {
+    var target = document.getElementById('target').contentWindow;
+    // Payload JSON để kích hoạt case "load-channel"
+    // Sử dụng giao thức javascript: để gọi hàm print()
+    var payload = {
+        "type": "load-channel",
+        "url": "javascript:alert(1)"
+    };
+    // Gửi thông điệp tới trang mục tiêu
+    target.postMessage(JSON.stringify(payload), '*');
+}
+</script>
+```
+
+Thử với `alert(1)`:
+
+![image8.png](/images/writeups/lab-dom/image8.png)
+
+![image9.png](/images/writeups/lab-dom/image9.png)
+
+Thay `arlert()` bằng hàm `print()` để slove lab.
+
+![image10.png](/images/writeups/lab-dom/image10.png)
+
+## Lab 4: DOM-based open redirection
+
+Mục tiêu của bài lab này là chuyển hướng nạ nhân đến máy chủ khai thác. Phân tích source code của trang web gốc, ta chưa thấy có phần nào chưa slink khả nghi.
+
+![image11.png](/images/writeups/lab-dom/image11.png)
+
+Nhưng ở trong source một bài viết , ở đây là /post?postId=4, có một đoạn mã JS xử lý chức năng "Back to Blog" ở cuối trang.
+
+![image12.png](/images/writeups/lab-dom/image12.png)
+
+```html
+<div class="is-linkback">
+    <a href='#' onclick='returnUrl = /url=(https?:\/\/.+)/.exec(location); location.href = returnUrl ? returnUrl[1] : "/"'>Back to Blog</a>
+</div>
+```
+
+Đoạn mã này thực hiện chuyển hướng về url có trong trường location, trường này sẽ đi qua một filer, nó cố gắng tìm kiếm chuỗi bắt đầu bằng `url=` theo sau là `http://` hoặc `https://`. Ký tự `.+` (khớp mọi thứ) sẽ tiếp nhận toàn bộ phần còn lại của URL.
+
+`location.href` là sink, nó sẽ điều hướng đến trang web mục tiêu, ở đây ta sẽ lợi dụng nó để thực thi JS.
+
+Thực hiện inject vào URL, chuyển hướng trang web về máy chủ khai thác.
+
+`https://0a5a003c04da5afb80ff03ca004b0018.web-security-academy.net/post?postId=4&url=https://YOUR-EXPLOIT-SERVER-ID.exploit-server.net/` ->> solve lab.
+
+![image13.png](/images/writeups/lab-dom/image13.png)
+
+## Lab 5: DOM-based cookie manipulation
+
+Mục tiêu của bài lab này là chạy được hàm `print()`.
+
+Trong source code của phần xem các sản phẩm của cửa hàng ( /product?productId=2 ), có một đoạn JS có tác dụng Lấy toàn bộ địa chỉ URL hiện tại của trình duyệt và lưu nó vào một cookie tên là lastViewedProduct ( SOURCE )
+
+![image14.png](/images/writeups/lab-dom/image14.png)
+
+```javascript
+document.cookie = 'lastViewedProduct=' + window.location + '; SameSite=None; Secure'
+```
+
+Nhưng nó tin tưởng tuyệt đối vào `window.location`, dữ liệu từ URL được ghi trực tiếp vào cookie thông qua `document.cookie` ( SINK ) mà không qua bất kỳ khâu kiểm duyệt hay mã hóa nào.
+
+Việc lưu trữ này nhằm phục vụ tính năng xem sản phẩm được truy nhập lần cuối.
+
+![image15.png](/images/writeups/lab-dom/image15.png)
+
+Khi này, hệ thống sẽ lấy URL trong `document.cookie` và hiển thị. Vậy nếu như ta thao túng được URL này thì sẽ thực thi được JS.
+
+```html
+<iframe src="https://YOUR-LAB-ID.web-security-academy.net/product?productId=1&'><script>alert(1)</script>" onload="if(!window.firstTime){window.firstTime=true; this.src='https://YOUR-LAB-ID.web-security-academy.net/';}"></iframe>
+```
+
+Khi URL chứa mã độc đã được lưu vào cookie, sự kiện onload được kích hoạt nhằm thay đổi giá trị src của iframe để điều hướng nạn nhân về trang chủ.. ( thông qua biến `window.firstTime` ) , nơi mà hệ thống sẽ đọc cookie nhiễm độc đó và chèn vào DOM, khiến trình duyệt thực thi JS và hoàn thành bài Lab
+
+Nhập payload này vào máy chủ khai thác.
+
+![image16.png](/images/writeups/lab-dom/image16.png)
+
+Thực thi thành công.
+
+![image17.png](/images/writeups/lab-dom/image17.png)
+
+Đổi `alert(1)` thành `print()` -> solve lab.
+
+![image18.png](/images/writeups/lab-dom/image18.png)
+
+## Lab 6: Exploiting DOM clobbering to enable XSS
+
+Mục tiêu của bài lab này là thực thi thành công JS trên trang web.
+
+Trong soucrce code của trang web có một file JS có chức năng tải và hiển thị bình luận của người dùng.
+
+![image19.png](/images/writeups/lab-dom/image19.png)
+
+Ở đây có một số dòng code nguy hiểm.
+
+```javascript
+let defaultAvatar = window.defaultAvatar || {avatar: '/resources/images/avatarDefault.svg'}
+```
+
+Script tin tưởng rằng `window.defaultAvatar` là một đối tượng cấu hình hệ thống. Tuy nhiên, trong trình duyệt, kẻ tấn công có thể chèn một thẻ HTML (ví dụ `<a id="defaultAvatar">`) để ghi đè lên biến toàn cục này.
+
+Hệ thống có sử dụng `DOMPurify.sanitize` và hàm `escapeHTML`, nhưng lại để lộ một thiếu sót tại:
+
+```javascript
+let avatarImgHTML = '<img class="avatar" src="' + (comment.avatar ? escapeHTML(comment.avatar) : defaultAvatar.avatar) + '">';
+```
+
+Nếu ta không cung cấp `comment.avatar`, code sẽ lấy `defaultAvatar.avatar`. Trường này đã bị ta kiểm soát ở đoạn code phía trên.
+
+Có một sink nguy hiểm là `divImgContainer.innerHTML = avatarImgHTML`, nó sẽ cho phép thực thi JS.
+
+Ta sẽ thực hiện kỹ thuật DOM Clobbering, đăng tải một bình luận ép cho trang web thực thi JS với nội dung như sau:
+
+```html
+<a id=defaultAvatar><a id=defaultAvatar name=avatar href="cid:&quot;onerror=alert(1)//">
+```
+
+Hai thẻ `<a>` phối hợp với nhau để tạo ra một đối tượng giả mạo trong bộ nhớ trình duyệt có tên là `defaultAvatar`. Trong đó, thuộc tính `avatar` của đối tượng này sẽ trỏ thẳng đến dòng lệnh độc hại nằm ở phần `href`.
+
+Khi đoạn code của trang web chạy, nó sẽ lấy dòng lệnh độc hại đó và dán vào thẻ ảnh (`<img>`). Nhờ dấu ngoặc kép được mã hóa (`&quot;`), nó sẽ bẻ gãy cấu trúc của thẻ ảnh ban đầu để chèn thêm một lệnh mới là `onerror` (thực thi khi ảnh lỗi).
+
+Dán payload vào phần bình luận nhấn Post Comment.
+
+Đăng thêm một bình luận thứ hai với nội dung bất kỳ (ví dụ: "Hello"). Khi ta nhấn Post lần 2, trang web sẽ tải lại danh sách bình luận. Lúc này, biến `defaultAvatar` đã bị chiếm quyền bởi các thẻ `<a>` ở bước 1.
+
+Script sẽ lấy giá trị độc hại đó nạp vào thẻ ảnh của bình luận thứ hai, gây ra lỗi và kích hoạt hàm `alert(1)` -> solve lab.
+
+![image20.png](/images/writeups/lab-dom/image20.png)
+
+![image21.png](/images/writeups/lab-dom/image21.png)
+
+![image22.png](/images/writeups/lab-dom/image22.png)

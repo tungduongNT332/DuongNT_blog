@@ -1,0 +1,180 @@
+---
+title: "WebSockets"
+description: "Phân tích toàn diện về lỗ hổng bảo mật WebSockets — từ nguyên lý hoạt động, các biến thể tấn công, kỹ thuật khai thác thực tế đến checklist kiểm thử và cách phòng ngừa."
+date: "2026-05-08"
+category: "vulnerability"
+tags: ["websockets", "xss", "csrf", "cswsh", "web-security"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+WebSockets được sử dụng rất phổ biến trong các ứng dụng web hiện đại. Đây là một công nghệ cho phép tạo ra một kênh giao tiếp hai chiều liên tục giữa trình duyệt (máy khách) và máy chủ. Kết nối này được khởi tạo ban đầu thông qua giao thức HTTP thông thường.
+
+![WebSockets](/images/vulnerabilities/websockets/image1.png)
+
+WebSockets được dùng cho nhiều mục đích đòi hỏi tốc độ phản hồi ngay lập tức, chẳng hạn như ứng dụng chat, thao tác của người dùng trong game, hoặc truyền tải dữ liệu tài chính theo thời gian thực. Vì có sự liên kết chặt chẽ với nền tảng web, gần như bất kỳ rủi ro bảo mật nào xảy ra với kết nối HTTP truyền thống đều có khả năng xuất hiện trên luồng giao tiếp của WebSockets.
+
+<Alert type="warning">
+Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Để hiểu cách lỗ hổng WebSockets phát sinh, chúng ta cần phân biệt sự khác nhau cơ bản giữa nó với HTTP và nắm rõ cơ chế thiết lập kết nối ban đầu.
+
+### 2.1. Sự khác biệt giữa HTTP và WebSockets
+
+Hầu hết các giao tiếp trên web sử dụng HTTP. Với HTTP, máy khách gửi một yêu cầu và máy chủ trả về một phản hồi (giống như việc gửi một bức thư và chờ hồi âm). Giao dịch kết thúc ngay khi nhận được phản hồi. Ngay cả khi kết nối mạng được giữ mở, các yêu cầu tiếp theo vẫn là những giao dịch hoàn toàn độc lập.
+
+Ngược lại, WebSockets giống như một cuộc gọi điện thoại. Sau khi kết nối được thiết lập, đường dây sẽ được giữ mở liên tục. Cả máy khách và máy chủ đều có thể chủ động gửi tin nhắn cho nhau vào bất kỳ lúc nào mà không cần tuân theo chu kỳ "một yêu cầu - một phản hồi" cứng nhắc.
+
+### 2.2. Quá trình thiết lập kết nối WebSocket
+
+Các kết nối WebSocket thường được tạo bằng JavaScript ở phía giao diện người dùng:
+
+```javascript
+var ws = new WebSocket("wss://normal-website.com/chat");
+```
+
+Lưu ý: Giao thức `wss` thiết lập WebSocket qua một kết nối được mã hóa an toàn (TLS), trong khi giao thức `ws` sử dụng kết nối văn bản thuần túy không mã hóa.
+
+Để bắt đầu, trình duyệt và máy chủ thực hiện một bước "bắt tay" (handshake) thông qua HTTP. Trình duyệt sẽ gửi một yêu cầu thiết lập như sau:
+
+```
+GET /chat HTTP/1.1
+Host: normal-website.com
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: wDqumtseNBJdhkihL6PW7w==
+Connection: keep-alive, Upgrade
+Cookie: session=KOsEJNuflw4Rd9BDNrVmvwBF9rEijeE2
+Upgrade: websocket
+```
+
+Nếu máy chủ đồng ý, nó sẽ trả về một phản hồi xác nhận:
+
+```
+HTTP/1.1 101 Switching Protocols
+Connection: Upgrade
+Upgrade: websocket
+Sec-WebSocket-Accept: 0FFP+2nmNIf/h+4BP36k9uzrYGk=
+```
+
+Tại thời điểm này, HTTP nhường chỗ, kết nối được chuyển đổi chính thức sang WebSockets. Cần đặc biệt chú ý: Tiêu đề `Sec-WebSocket-Key` chỉ chứa một chuỗi ngẫu nhiên nhằm ngăn chặn lỗi từ các máy chủ trung gian (proxy), nó hoàn toàn không có giá trị để xác thực hay kiểm tra quyền đăng nhập. Chính vì vậy, nếu quy trình bắt tay này không có biện pháp bảo vệ bổ sung, hệ thống sẽ rơi vào vòng nguy hiểm.
+
+## 3. Các biến thể và Phân loại
+
+Vì hoạt động trên nền tảng web, các tin nhắn qua WebSockets có thể mang theo bất kỳ loại mã độc nào:
+
+- **Lỗ hổng dựa trên dữ liệu đầu vào:** Dữ liệu do người dùng gửi qua WebSockets không được kiểm tra kỹ lưỡng, dẫn đến việc máy chủ bị tấn công SQL Injection hoặc Tiêm thực thể XML (XXE Injection).
+
+- **Lỗ hổng phía máy khách:** Kẻ tấn công gửi mã độc qua WebSockets, mã này sau đó được chuyển tiếp và hiển thị trên màn hình của những người dùng khác, dẫn đến tấn công XSS.
+
+- **Lỗ hổng ẩn (Blind vulnerabilities):** Một số lỗi không trả về kết quả hiển thị trực tiếp qua WebSockets, đòi hỏi chuyên gia bảo mật phải dùng các công cụ theo dõi tương tác ngoài luồng (như OAST) để phát hiện.
+
+- **Lỗ hổng do thao túng quá trình thiết lập kết nối:** Phát sinh từ các lỗi thiết kế, chẳng hạn như máy chủ quá tin tưởng vào các tiêu đề HTTP giả mạo (như `X-Forwarded-For`), hoặc do hệ thống quản lý phiên đăng nhập lỏng lẻo.
+
+- **Chiếm đoạt WebSocket liên trang (CSWSH):** Thực chất là một cuộc tấn công giả mạo yêu cầu (CSRF) nhắm trực tiếp vào bước thiết lập kết nối ban đầu, cho phép kẻ tấn công kiểm soát luồng giao tiếp của nạn nhân.
+
+## 4. Hướng dẫn khai thác thực tế
+
+### 4.1. Thay đổi thông điệp WebSocket để khai thác lỗ hổng
+
+Phần lớn các lỗi liên quan đến xử lý đầu vào có thể được tìm thấy bằng cách chỉnh sửa trực tiếp nội dung tin nhắn gửi đi qua WebSockets.
+
+Giả sử một ứng dụng trò chuyện sử dụng WebSockets. Khi bạn gửi tin nhắn, dữ liệu dạng JSON được truyền đi:
+
+```json
+{"message":"Hello Carlos"}
+```
+
+Tin nhắn này được máy chủ chuyển tiếp đến người dùng khác và hiển thị lên giao diện dưới dạng HTML:
+
+```html
+<td>Hello Carlos</td>
+```
+
+Nếu hệ thống không có lớp lọc dữ liệu độc hại, kẻ tấn công có thể chèn một đoạn mã XSS bằng cách sửa nội dung thông điệp thành:
+
+```json
+{"message":"<img src=1 onerror='alert(1)'>"}
+```
+
+### 4.2. Thao túng bước bắt tay thiết lập kết nối
+
+Một số lỗ hổng chỉ xuất hiện khi kẻ tấn công can thiệp vào ngay bước gửi yêu cầu HTTP ban đầu. Nguyên nhân thường do:
+
+- Hệ thống dùng các tiêu đề HTTP không an toàn để đưa ra quyết định bảo mật.
+
+- Phiên làm việc của WebSockets phụ thuộc hoàn toàn vào thông tin có được từ yêu cầu bắt tay. Kẻ tấn công có thể sửa đổi Cookie hoặc Token ngay từ bước này để đổi quyền truy cập.
+
+### 4.3. Tấn công chiếm đoạt WebSocket liên trang (CSWSH)
+
+Lỗ hổng này xảy ra khi bước thiết lập kết nối chỉ kiểm tra danh tính thông qua Cookie lưu trên trình duyệt, mà không yêu cầu thêm bất kỳ mã xác thực ngẫu nhiên nào (như CSRF Token).
+
+Ví dụ một yêu cầu bắt tay lỏng lẻo, rủi ro cao vì chỉ dựa vào Cookie:
+
+```
+GET /chat HTTP/1.1
+Host: normal-website.com
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: wDqumtseNBJdhkihL6PW7w==
+Connection: keep-alive, Upgrade
+Cookie: session=KOsEJNuflw4Rd9BDNrVmvwBF9rEijeE2
+Upgrade: websocket
+```
+
+**Cách thức tấn công:** Kẻ tấn công lừa nạn nhân truy cập vào một trang web do chúng kiểm soát. Mã JavaScript trên trang độc hại này sẽ âm thầm mở một kết nối WebSocket trỏ về phía hệ thống mục tiêu. Trình duyệt của nạn nhân tự động gửi kèm Cookie đăng nhập, khiến hệ thống lầm tưởng đây là một yêu cầu hợp lệ từ nạn nhân.
+
+**Sức tàn phá:** Khác với tấn công CSRF thông thường (chỉ gửi lệnh đi), CSWSH tạo ra một kênh giao tiếp hai chiều trực tiếp về máy của kẻ tấn công.
+
+- Kẻ tấn công có thể liên tục gửi các lệnh thực hiện chức năng trái phép dưới danh nghĩa nạn nhân.
+
+- Kẻ tấn công có thể đọc toàn bộ tin nhắn phản hồi từ máy chủ, qua đó đánh cắp dữ liệu riêng tư của nạn nhân.
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+Việc phát hiện các lỗ hổng WebSockets đòi hỏi bạn phải thao tác linh hoạt với các công cụ chặn bắt gói tin. Burp Suite là lựa chọn tối ưu cho việc này.
+
+### 5.1. Chặn và chỉnh sửa tin nhắn
+
+- Mở trình duyệt được tích hợp sẵn trong Burp Suite.
+
+- Sử dụng chức năng có WebSockets trên trang web. Bạn sẽ thấy các bản ghi xuất hiện trong tab **WebSockets history**.
+
+- Bật tính năng **Intercept** (Chặn bắt) trong Burp Proxy.
+
+- Khi trình duyệt gửi tin nhắn, Burp sẽ giữ nó lại. Bạn có thể chỉnh sửa tự do các dòng lệnh trước khi nhấn nút **Forward** để đẩy dữ liệu tới máy chủ.
+
+### 5.2. Phát lại và tạo tin nhắn mới
+
+- Chọn một tin nhắn bất kỳ trong phần lịch sử WebSockets, nhấn chuột phải và đưa sang **Repeater**.
+
+- Tại Repeater, bạn có thể thay đổi nội dung tin nhắn và gửi đi gửi lại nhiều lần để thử nghiệm các biến thể tấn công (như payload SQLi hoặc XSS).
+
+- Bạn cũng có thể viết một thông điệp hoàn toàn mới và chọn gửi cho máy khách hoặc gửi lên máy chủ.
+
+### 5.3. Can thiệp vào quy trình bắt tay thiết lập kết nối
+
+Đôi khi bạn cần thay đổi thông số ngay từ bước HTTP ban đầu (ví dụ: làm mới Token hoặc chèn tiêu đề lạ).
+
+- Gửi bản ghi WebSockets sang Burp Repeater.
+
+- Nhấn vào biểu tượng chỉnh sửa bên cạnh URL WebSocket. Công cụ sẽ cho phép bạn kết nối lại với một luồng đang hoạt động hoặc khởi tạo lại một kết nối đã đóng.
+
+- Ở bước này, Burp hiển thị toàn bộ yêu cầu HTTP của quá trình bắt tay. Bạn có thể thay đổi Cookie hoặc chèn thêm dữ liệu trước khi hệ thống thực sự kết nối.
+
+- Bấm **Connect**. Nếu thành công, bạn sẽ có một đường truyền hoàn toàn mới theo ý đồ của mình.
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Để đảm bảo luồng giao tiếp qua WebSockets luôn an toàn, các kỹ sư phát triển cần áp dụng chặt chẽ các nguyên tắc sau:
+
+- **Sử dụng kết nối mã hóa:** Bắt buộc sử dụng giao thức `wss://` thay vì `ws://` để ngăn chặn kẻ xấu nghe lén hoặc giả mạo dữ liệu trên đường truyền mạng.
+
+- **Cố định địa chỉ kết nối:** Đường dẫn (URL) của điểm cuối WebSockets phải được viết cứng (hardcode) trong hệ thống. Tuyệt đối không cho phép tạo đường dẫn dựa trên dữ liệu người dùng nhập vào.
+
+- **Bảo vệ bước thiết lập kết nối:** Yêu cầu bắt tay ban đầu phải có biện pháp chống giả mạo (như CSRF Token) để ngăn chặn hoàn toàn rủi ro bị chiếm đoạt liên trang (CSWSH).
+
+- **Kiểm tra dữ liệu hai chiều:** Hệ thống phải coi mọi dữ liệu gửi tới và nhận về qua WebSockets là "không an toàn". Cần áp dụng đồng bộ các quy trình làm sạch (sanitization), mã hóa (encoding) và tham số hóa dữ liệu (parameterization) để dập tắt nguy cơ bị tấn công XSS hoặc SQL Injection.

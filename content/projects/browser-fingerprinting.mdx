@@ -1,0 +1,103 @@
+---
+title: "Browser Fingerprinting & Phishing Page Demo"
+description: "Dự án nghiên cứu và trình diễn kỹ thuật Browser Fingerprinting — thu thập thông tin thiết bị, định vị địa lý, chụp ảnh từ camera và gửi toàn bộ về webhook thông qua một trang giả mạo Google."
+date: "2026-05-04"
+category: "project"
+tags: ["phishing", "fingerprinting", "javascript", "social-engineering", "red-team"]
+thumbnail: ""
+external_link: ""
+github_link: "https://github.com/tungduongNT332/google"
+---
+
+## Tổng Quan
+
+**Browser Fingerprinting Demo** là một dự án nghiên cứu mã nguồn mở trình diễn kỹ thuật thu thập thông tin trình duyệt và thiết bị của người dùng thông qua một trang HTML đơn giản. Dự án được xây dựng nhằm mục đích học thuật và nâng cao nhận thức bảo mật về các kỹ thuật tấn công Social Engineering và Phishing.
+
+<Alert type="warning">
+Dự án này được xây dựng hoàn toàn vì mục đích nghiên cứu và giáo dục. Việc triển khai trên môi trường thực tế nhằm mục đích thu thập thông tin người dùng mà không có sự đồng ý là hành vi vi phạm pháp luật.
+</Alert>
+
+## Cơ Chế Hoạt Động
+
+Khi nạn nhân truy cập trang web, trang sẽ hiển thị giao diện mô phỏng màn hình "Đang tải tài liệu..." để đánh lừa người dùng. Trong thời gian chờ đó, một đoạn mã JavaScript ngầm chạy trong nền, thu thập toàn bộ thông tin từ trình duyệt trước khi chuyển hướng nạn nhân sang trang `google.com`.
+
+## Các Thông Tin Được Thu Thập
+
+### Thông Tin Trình Duyệt
+- User-Agent, ngôn ngữ, nền tảng, nhà cung cấp trình duyệt
+- Trạng thái Cookie, Do Not Track, số nhân CPU, dung lượng RAM
+- Client Hints nâng cao (kiến trúc CPU, phiên bản đầy đủ, v.v.)
+
+### Thông Tin Màn Hình & Phần Cứng
+- Độ phân giải màn hình, độ sâu màu, hướng màn hình
+- GPU Vendor & Renderer thông qua WebGL
+
+### Browser Fingerprint
+- **Canvas Fingerprint**: Vẽ một canvas ẩn và trích xuất dữ liệu pixel để tạo dấu vân tay duy nhất cho từng thiết bị
+- **WebGL Fingerprint**: Khai thác thông tin GPU renderer
+- **Font Detection**: Phát hiện danh sách font chữ được cài đặt trên máy
+
+### Thông Tin Mạng & Vị Trí
+- Loại kết nối, băng thông, RTT (Round-Trip Time)
+- Múi giờ và locale người dùng
+- **Định vị GPS** thông qua Geolocation API (yêu cầu quyền truy cập)
+- **Địa chỉ IP công khai** thông qua API bên ngoài
+
+### Thu Thập Phương Tiện
+- Yêu cầu quyền truy cập **Camera và Microphone**
+- Tự động **chụp ảnh** từ camera trước và chuyển đổi sang Base64
+- Tắt camera ngay lập tức sau khi chụp để tránh bị phát hiện
+
+### Thông Tin Pin & Quyền Hạn
+- Mức pin, trạng thái sạc, thời gian còn lại
+- Trạng thái quyền thông báo (Notifications)
+
+## Luồng Tấn Công
+
+Nạn nhân click link → Trang "Đang tải tài liệu..." hiển thị → JavaScript ngầm thu thập thông tin (Browser Info → Screen → Network → GPS → Camera → IP) → Gửi toàn bộ dữ liệu về Webhook (hooklistener.com) → Chuyển hướng về google.com (nạn nhân không nghi ngờ)
+
+## Kỹ Thuật Quan Trọng
+
+### Canvas Fingerprinting
+```javascript
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle = "#f60";
+ctx.fillRect(125, 1, 62, 20);
+ctx.font = "11pt no-real-font-123";
+ctx.fillText("Cwm fjordbank glyphs vext quiz", 2, 15);
+// Mỗi thiết bị render canvas khác nhau → dấu vân tay độc nhất
+data.fingerprint.canvas = canvas.toDataURL();
+```
+
+### Chụp Ảnh Từ Camera
+```javascript
+const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+const video = document.createElement('video');
+video.srcObject = stream;
+await video.play();
+
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d');
+ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+// Chuyển ảnh thành Base64 để gửi về server
+const photoBase64 = canvas.toDataURL('image/jpeg', 0.7);
+data.capturedPhoto = photoBase64;
+
+// Tắt camera ngay sau khi chụp
+stream.getTracks().forEach(track => track.stop());
+```
+
+## Bài Học Rút Ra
+
+Dự án này minh họa các mối nguy hiểm thực tế mà người dùng phải đối mặt khi truy cập các trang web không đáng tin cậy:
+
+- **Không bao giờ cấp quyền Camera/Microphone** cho những trang web không rõ nguồn gốc
+- **Không bao giờ cấp quyền Định vị** cho những trang web không cần thiết
+- Chỉ cần truy cập một trang web, ngay cả khi **không click bất cứ thứ gì**, kẻ tấn công đã có thể thu thập hàng chục thông tin nhận dạng thiết bị
+- Kỹ thuật Canvas/WebGL Fingerprinting hoạt động **hoàn toàn thầm lặng**, không cần bất kỳ quyền nào từ người dùng
+
+<Alert type="tip">
+Để bảo vệ bản thân khỏi Browser Fingerprinting, hãy sử dụng trình duyệt Tor Browser hoặc các extension như Canvas Blocker. Luôn kiểm tra URL trước khi cấp bất kỳ quyền truy cập nào.
+</Alert>
