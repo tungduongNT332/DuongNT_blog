@@ -1,9 +1,9 @@
 ---
 title: "PQC Algorithm Comparison on Blockchain"
-description: "So sánh hiệu năng các thuật toán chữ ký số hậu lượng tử (Post-Quantum Cryptography) trên nền tảng Blockchain — bao gồm CRYSTALS-Dilithium, FALCON, và SPHINCS+."
+description: "Bộ công cụ benchmark toàn diện so sánh hiệu năng các thuật toán mật mã hậu lượng tử (Dilithium, Falcon, SPHINCS+, Kyber) trên Blockchain Ethereum — đánh giá trên 3 trụ cột: Integrity, Confidentiality, Availability."
 date: "2025-04-20"
 category: "project"
-tags: ["pqc", "blockchain", "cryptography", "dilithium", "falcon", "sphincs"]
+tags: ["pqc", "blockchain", "cryptography", "dilithium", "falcon", "sphincs", "kyber"]
 thumbnail: ""
 external_link: ""
 github_link: "https://github.com/tungduongNT332/PQC-on-Blockchain"
@@ -11,121 +11,145 @@ github_link: "https://github.com/tungduongNT332/PQC-on-Blockchain"
 
 ## Tổng Quan
 
-Dự án này nghiên cứu và so sánh hiệu năng của các thuật toán chữ ký số **hậu lượng tử (Post-Quantum Cryptography - PQC)** khi được tích hợp vào hệ thống Blockchain. Mục tiêu là đánh giá khả năng thay thế các thuật toán chữ ký số truyền thống (ECDSA, RSA) bằng các thuật toán kháng lượng tử trong bối cảnh máy tính lượng tử đang phát triển mạnh mẽ.
+Dự án xây dựng một bộ công cụ benchmark toàn diện để đánh giá khả năng tích hợp các thuật toán mật mã hậu lượng tử (Post-Quantum Cryptography - PQC) được NIST tiêu chuẩn hóa vào hạ tầng Blockchain Ethereum. Hệ thống đo lường hiệu năng trên cả **3 trụ cột an toàn thông tin**: Tính toàn vẹn (Integrity), Tính bảo mật (Confidentiality), và Tính sẵn sàng (Availability).
 
 <Alert type="important">
 Máy tính lượng tử có khả năng phá vỡ các hệ mật mã khóa công khai hiện tại (RSA, ECC) thông qua thuật toán Shor. Việc nghiên cứu PQC là cấp thiết để bảo vệ hệ thống blockchain trong tương lai.
 </Alert>
 
+## Kiến Trúc Dự Án
+
+Dự án được tổ chức theo kiến trúc **unified suite** — mỗi thuật toán là một pack độc lập, chia sẻ chung smart contract và module Python:
+
+```
+pqc-algorithm-comparison-on-blockchain/
+├── .env.example                 # Cấu hình chung (RPC, Private Key, Contract)
+├── shared/
+│   ├── contracts/
+│   │   ├── Demo.sol             # Smart contract Solidity (EVM)
+│   │   └── DemoABI.json         # ABI tương tác
+│   ├── python/
+│   │   └── common.py            # Module dùng chung (Web3, env, benchmark I/O)
+│   ├── offchain_store/          # Lưu trữ off-chain (chữ ký, public key)
+│   └── requirements.txt         # Dependencies
+└── algorithms/
+    ├── dilithium/               # ML-DSA-44 (Chữ ký số)
+    ├── falcon/                  # Falcon-512 (Chữ ký số)
+    ├── sphincs-plus/            # SPHINCS+-SHA2-128f (Chữ ký số)
+    └── kyber-kem/               # ML-KEM-512 (Đóng gói khóa)
+```
+
 ## Các Thuật Toán Được So Sánh
 
-### CRYSTALS-Dilithium
+| Thuật toán | Loại | Tiêu chuẩn NIST | Cơ sở toán học |
+|---|---|---|---|
+| **CRYSTALS-Dilithium** | Chữ ký số | FIPS 204 (ML-DSA) | Lattice (Module-LWE) |
+| **FALCON** | Chữ ký số | FIPS 206 (dự kiến) | Lattice (NTRU + GPV) |
+| **SPHINCS+** | Chữ ký số | FIPS 205 (SLH-DSA) | Hash-based |
+| **CRYSTALS-Kyber** | Đóng gói khóa (KEM) | FIPS 203 (ML-KEM) | Lattice (Module-LWE) |
 
-Dilithium là thuật toán chữ ký số dựa trên **lattice (lưới)**, được NIST chọn làm tiêu chuẩn chính cho chữ ký số hậu lượng tử (FIPS 204).
+### CRYSTALS-Dilithium (ML-DSA-44)
 
-**Ưu điểm:**
-- Tốc độ ký và xác minh nhanh
-- Kích thước khóa và chữ ký hợp lý
-- Được NIST tiêu chuẩn hóa (ML-DSA)
-
-```python
-# Ví dụ: Sinh khóa Dilithium
-from dilithium import Dilithium2
-
-public_key, secret_key = Dilithium2.keygen()
-signature = Dilithium2.sign(secret_key, message)
-is_valid = Dilithium2.verify(public_key, message, signature)
-```
-
-### FALCON
-
-FALCON (Fast-Fourier Lattice-based Compact Signatures over NTRU) sử dụng cấu trúc lưới NTRU với kỹ thuật **GPV sampling**.
-
-**Ưu điểm:**
-- Chữ ký nhỏ gọn nhất trong các thuật toán lattice-based
-- Phù hợp cho các hệ thống có băng thông hạn chế
+Thuật toán chữ ký số dựa trên **lattice**, được NIST chọn làm tiêu chuẩn chính (FIPS 204). Trong dự án, Dilithium được sử dụng ở chế độ hybrid: PQC signature lưu off-chain, proof hash ghi on-chain.
 
 ```python
-# Ví dụ: Ký số với FALCON
-from falcon import SecretKey, PublicKey
+from pqcrypto.sign import ml_dsa_44
 
-sk = SecretKey(512)
-pk = PublicKey(sk)
-signature = sk.sign(message)
-is_valid = pk.verify(message, signature)
+public_key, secret_key = ml_dsa_44.generate_keypair()
+signature = ml_dsa_44.sign(secret_key, payload)
+verified = ml_dsa_44.verify(public_key, payload, signature)
 ```
 
-### SPHINCS+
+### FALCON (Falcon-512)
 
-SPHINCS+ là thuật toán chữ ký số dựa trên **hash**, không phụ thuộc vào bất kỳ giả định toán học nào ngoài tính an toàn của hàm hash.
+Sử dụng cấu trúc lưới NTRU với kỹ thuật **GPV sampling**. Cho ra chữ ký nhỏ gọn nhất trong các thuật toán lattice-based, phù hợp cho hệ thống có băng thông hạn chế.
 
-**Ưu điểm:**
-- Bảo mật dựa trên giả định tối thiểu (chỉ cần hash an toàn)
-- Không bị ảnh hưởng bởi các tiến bộ trong lý thuyết lưới
+### SPHINCS+ (SHA2-128f)
 
-**Nhược điểm:**
-- Chữ ký rất lớn (lên tới ~49KB)
-- Tốc độ ký chậm hơn
+Thuật toán chữ ký dựa trên **hash**, không phụ thuộc vào giả định toán học ngoài tính an toàn của hàm hash. Chữ ký lớn hơn đáng kể nhưng có tính bảo mật cao nhất.
 
-## Kết Quả So Sánh
+### CRYSTALS-Kyber (ML-KEM-512)
 
-| Thuật toán | Key Gen (ms) | Sign (ms) | Verify (ms) | Sig Size (bytes) | PK Size (bytes) |
-|------------|-------------|-----------|-------------|-------------------|-----------------|
-| **Dilithium2** | 0.15 | 0.52 | 0.18 | 2,420 | 1,312 |
-| **FALCON-512** | 8.21 | 1.23 | 0.09 | 666 | 897 |
-| **SPHINCS+-128f** | 0.42 | 12.50 | 0.38 | 17,088 | 32 |
-| ECDSA (ref) | 0.08 | 0.05 | 0.06 | 72 | 33 |
+Thuật toán **đóng gói khóa (KEM)** dùng cho bảo mật dữ liệu. Trong dự án, Kyber được sử dụng để đóng gói khóa AES-256, mã hóa payload trước khi ghi on-chain.
 
-<Alert type="note">
-Kết quả đo trên Intel Core i7-12700H, RAM 16GB. Thời gian là trung bình của 1000 lần chạy. Dilithium2 cho hiệu năng tổng thể tốt nhất khi xét cả tốc độ lẫn kích thước.
-</Alert>
+## Tính Năng Chính
 
-## Tích Hợp Blockchain
+### Tính Toàn Vẹn (Integrity)
 
-Dự án triển khai một blockchain đơn giản bằng Python, trong đó mỗi transaction được ký bằng một trong ba thuật toán PQC:
+- **Traditional Mode**: Giao dịch ký bằng ECDSA tiêu chuẩn của Ethereum.
+- **PQC Hybrid Mode**: Giao dịch ký kép — ECDSA (on-chain) + PQC signature (off-chain via IPFS/local). Smart contract lưu `pqcProofHash`, `ipfsCid`, và `algorithm`.
+- **End-to-End Verification**: Script `verify_e2e.py` đọc record on-chain, tải chữ ký + public key từ off-chain, xác minh cả proof hash lẫn PQC signature.
+- **Integrity Cases**: Script `integrity_cases.py` kiểm thử các tình huống giả mạo (tampered payload, wrong key, replay attack).
 
-```python
-class Transaction:
-    def __init__(self, sender, receiver, amount, pqc_algo="dilithium"):
-        self.sender = sender
-        self.receiver = receiver
-        self.amount = amount
-        self.pqc_algo = pqc_algo
-        self.signature = None
+### Tính Bảo Mật (Confidentiality)
 
-    def sign(self, private_key):
-        """Ký transaction bằng thuật toán PQC đã chọn"""
-        data = self.calculate_hash()
-        if self.pqc_algo == "dilithium":
-            self.signature = dilithium_sign(private_key, data)
-        elif self.pqc_algo == "falcon":
-            self.signature = falcon_sign(private_key, data)
-        elif self.pqc_algo == "sphincs":
-            self.signature = sphincs_sign(private_key, data)
+- **Signature Packs** (Dilithium, Falcon, SPHINCS+): Mã hóa payload bằng **AES-256-GCM** trước khi ghi on-chain, kết hợp PQC signature.
+- **KEM Pack** (Kyber): Sử dụng **ML-KEM-512** để đóng gói khóa AES, mã hóa payload, rồi ghi on-chain.
+
+### Tính Sẵn Sàng (Availability)
+
+- Benchmark tự động chạy N giao dịch liên tiếp trên cả 3 mode.
+- Xuất kết quả JSON và biểu đồ so sánh bằng matplotlib.
+
+## Smart Contract
+
+Contract `Demo.sol` (Solidity ^0.8.20) được deploy trên Sepolia testnet, mỗi bản ghi on-chain gồm:
+
+```solidity
+struct Record {
+    uint256 recordId;
+    address owner;
+    bytes payload;
+    bytes32 payloadHash;
+    bytes32 pqcProofHash;
+    uint256 appNonce;
+    uint256 timestamp;
+    bool encrypted;
+    string mode;
+    string ipfsCid;
+    string algorithm;
+}
 ```
 
-## Cách Chạy
+- `payloadHash` — hash kiểm tra tính toàn vẹn dữ liệu
+- `pqcProofHash` — hash bằng chứng PQC (`keccak256(payload + pqc_signature)`)
+- `appNonce` — chống replay attack
+- `ipfsCid` + `algorithm` — tham chiếu off-chain và thuật toán PQC
+
+## Quy Trình Vận Hành
 
 ```bash
-# Clone repository
-git clone https://github.com/the-phong/pqc-algorithm-comparison-on-blockchain.git
-cd pqc-algorithm-comparison-on-blockchain
+# 1. Cài đặt dependencies
+pip install -r shared/requirements.txt
 
-# Cài đặt dependencies
-pip install -r requirements.txt
+# 2. Cấu hình
+cp .env.example .env
+# Điền: RPC_URL, PRIVATE_KEY, CONTRACT_ADDRESS
 
-# Chạy benchmark
-python benchmark.py
+# 3. Chạy demo (ví dụ: Dilithium)
+cd algorithms/dilithium
+python scripts/traditional_demo.py           # ECDSA truyền thống
+python scripts/pqc_demo.py                   # Hybrid PQC + ECDSA
+python scripts/verify_e2e.py --record-id <ID> --public-key-cid <CID>
+python scripts/integrity_cases.py            # Kiểm thử toàn vẹn
+python scripts/confidentiality_demo.py       # Mã hóa AES-256-GCM + PQC
 
-# Chạy blockchain demo
-python blockchain_demo.py
+# 4. Benchmark
+python scripts/availability_benchmark.py --mode traditional --count 5
+python scripts/availability_benchmark.py --mode pqc_hybrid --count 5
+python scripts/availability_benchmark.py --mode pqc_confidential --count 5
+
+# 5. So sánh kết quả
+python benchmark/compare.py
+python benchmark/compare_availability.py
 ```
 
 ## Kết Luận
 
-- **Dilithium** là lựa chọn tối ưu cho blockchain nhờ cân bằng giữa tốc độ và kích thước
-- **FALCON** phù hợp khi cần chữ ký nhỏ gọn (IoT, embedded systems)
-- **SPHINCS+** phù hợp cho các hệ thống yêu cầu bảo mật tối đa, không phụ thuộc giả định toán học
+- **Dilithium (ML-DSA)** — Lựa chọn tối ưu cho blockchain nhờ cân bằng giữa tốc độ ký/xác minh và kích thước chữ ký
+- **FALCON** — Phù hợp khi cần chữ ký nhỏ gọn (IoT, embedded systems, băng thông hạn chế)
+- **SPHINCS+** — Phù hợp cho hệ thống yêu cầu bảo mật tối đa, không phụ thuộc giả định lưới
+- **Kyber (ML-KEM)** — Giải pháp đóng gói khóa hậu lượng tử cho bảo mật dữ liệu on-chain
 
 <Alert type="tip">
 Để tìm hiểu thêm về PQC, tham khảo [NIST PQC Project](https://csrc.nist.gov/projects/post-quantum-cryptography) và các tài liệu FIPS 203, 204, 205.
@@ -133,7 +157,6 @@ python blockchain_demo.py
 
 ## Tài Liệu Tham Khảo
 
-- [NIST FIPS 204 - Module-Lattice-Based Digital Signature Standard](https://csrc.nist.gov/pubs/fips/204/final)
-- [FALCON Specification](https://falcon-sign.info/)
-- [SPHINCS+ Specification](https://sphincs.org/)
-- [Post-Quantum Cryptography on Wikipedia](https://en.wikipedia.org/wiki/Post-quantum_cryptography)
+- **[NIST FIPS 204 - ML-DSA](https://csrc.nist.gov/pubs/fips/204/final)**: Tiêu chuẩn chữ ký số Module-Lattice
+- **[FALCON Specification](https://falcon-sign.info/)**: Đặc tả thuật toán Falcon
+- **[SPHINCS+ Specification](https://sphincs.org/)**: Đặc tả thuật toán SPHINCS+

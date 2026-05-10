@@ -63,6 +63,16 @@ Sec-WebSocket-Accept: 0FFP+2nmNIf/h+4BP36k9uzrYGk=
 
 Tại thời điểm này, HTTP nhường chỗ, kết nối được chuyển đổi chính thức sang WebSockets. Cần đặc biệt chú ý: Tiêu đề `Sec-WebSocket-Key` chỉ chứa một chuỗi ngẫu nhiên nhằm ngăn chặn lỗi từ các máy chủ trung gian (proxy), nó hoàn toàn không có giá trị để xác thực hay kiểm tra quyền đăng nhập. Chính vì vậy, nếu quy trình bắt tay này không có biện pháp bảo vệ bổ sung, hệ thống sẽ rơi vào vòng nguy hiểm.
 
+### 2.3. Lỗ hổng phát sinh từ đâu?
+
+Lỗ hổng WebSockets bắt nguồn từ ba điểm yếu cốt lõi trong thiết kế và triển khai:
+
+- **Không kiểm tra dữ liệu đầu vào:** Sau khi kết nối được thiết lập, dữ liệu trao đổi qua WebSockets thường không đi qua các bộ lọc bảo mật truyền thống của HTTP (như WAF). Nếu máy chủ nhận dữ liệu từ WebSocket và xử lý trực tiếp mà không kiểm tra, kẻ tấn công có thể chèn mã độc (XSS, SQLi, XXE) vào luồng tin nhắn.
+
+- **Không xác thực nguồn gốc kết nối:** Bước bắt tay (handshake) sử dụng HTTP nên trình duyệt sẽ tự động gửi kèm Cookie phiên đăng nhập. Tuy nhiên, giao thức WebSocket không có cơ chế chống giả mạo yêu cầu (CSRF) tích hợp sẵn. Nếu máy chủ không kiểm tra tiêu đề `Origin` hoặc không yêu cầu CSRF Token trong bước bắt tay, bất kỳ trang web nào cũng có thể mở kết nối WebSocket đến hệ thống mục tiêu dưới danh nghĩa nạn nhân.
+
+- **Kết nối tồn tại lâu dài và hai chiều:** Khác với HTTP (gửi-nhận rồi kết thúc), WebSocket duy trì kết nối liên tục. Điều này có nghĩa là một khi kẻ tấn công chiếm được kết nối, chúng không chỉ gửi lệnh một lần mà có thể duy trì quyền truy cập, liên tục đọc dữ liệu phản hồi và thực hiện các hành động trái phép trong suốt thời gian kết nối còn hoạt động.
+
 ## 3. Các biến thể và Phân loại
 
 Vì hoạt động trên nền tảng web, các tin nhắn qua WebSockets có thể mang theo bất kỳ loại mã độc nào:

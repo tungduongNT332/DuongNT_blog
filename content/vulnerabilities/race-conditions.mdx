@@ -1,0 +1,204 @@
+---
+title: "Race Conditions"
+description: "Phân tích toàn diện về lỗ hổng Race Conditions — từ nguyên lý hoạt động, các biến thể tấn công TOCTOU/CSWSH, kỹ thuật khai thác Single-packet attack đến checklist kiểm thử và cách phòng ngừa."
+date: "2026-05-10"
+category: "vulnerability"
+tags: ["race-conditions", "toctou", "logic-flaw", "burp-suite", "web-security"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+Race conditions (Điều kiện tương tranh) là một lỗ hổng bảo mật sinh ra từ sai sót trong logic xử lý của ứng dụng. Lỗ hổng này xảy ra khi hệ thống tiếp nhận và xử lý nhiều yêu cầu cùng một lúc, nhưng lại thiếu đi cơ chế đồng bộ hóa hoặc khóa dữ liệu an toàn. Hậu quả là nhiều luồng xử lý cùng tranh giành, đọc và ghi đè lên một dữ liệu tại cùng một thời điểm, dẫn đến sự xung đột và làm sai lệch hành vi của hệ thống.
+
+![Race Conditions](/images/vulnerabilities/race-conditions/image1.png)
+
+Hacker lợi dụng lỗ hổng này bằng cách căn chỉnh thời gian, gửi các yêu cầu chớp nhoáng cùng lúc để cố tình tạo ra sự xung đột dữ liệu. Khoảng thời gian cực kỳ ngắn, thường chỉ vài phần nghìn giây, mà sự xung đột có thể xảy ra được gọi là Race window.
+
+Giống như các lỗi logic khác, mức độ tàn phá của Race conditions phụ thuộc vào chức năng mà nó nhắm tới (ví dụ: rút tiền, thanh toán, hay phân quyền).
+
+<Alert type="warning">
+Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Trên thực tế, một thao tác đơn giản của người dùng như gửi 1 yêu cầu HTTP có thể kích hoạt một chuỗi nhiều bước xử lý ngầm trên máy chủ. Trong quá trình này, hệ thống sẽ đi qua những trạng thái trung gian chỉ tồn tại trong tích tắc trước khi hoàn tất toàn bộ quy trình. Chúng ta gọi đây là các trạng thái phụ.
+
+Nếu hacker phát hiện ra nhiều yêu cầu HTTP cùng tác động lên một khối dữ liệu, họ có thể nhắm vào các trạng thái phụ này để khai thác lỗ hổng.
+
+**Ví dụ minh họa dễ hiểu:** Hãy xem xét một hệ thống Xác thực đa yếu tố. Luồng đăng nhập diễn ra như sau:
+
+- Người dùng nhập đúng mật khẩu.
+- Hệ thống ghi nhận tài khoản hợp lệ, sau đó chuyển hướng người dùng ra màn hình nhập mã MFA.
+
+Đoạn mã giả dưới đây mô phỏng luồng xử lý đó:
+
+```python
+session['userid'] = user.userid
+
+if user.mfa_enabled:
+    session['enforce_mfa'] = True
+    # Khởi tạo và gửi mã MFA cho người dùng
+    # Chuyển hướng trình duyệt đến biểu mẫu nhập mã MFA
+```
+
+Rủi ro nằm ở khoảng trống giữa bước 1 và bước 2. Đây chính là một trạng thái phụ: Hệ thống đã ghi nhận người dùng đăng nhập đúng mật khẩu, nhưng lệnh ép buộc nhập MFA lại chưa kịp kích hoạt. Kẻ tấn công có thể lợi dụng kẽ hở tích tắc này bằng cách: vừa gửi yêu cầu đăng nhập, vừa gửi ngay một yêu cầu truy cập vào trang dữ liệu nhạy cảm. Hệ thống bị quá tải xử lý và có thể cho phép truy cập trước khi MFA kịp chặn lại.
+
+## 3. Các biến thể và Phân loại
+
+Lỗ hổng Race conditions không chỉ dừng lại ở việc lách giới hạn, mà còn biến hóa thành nhiều dạng kỹ thuật tinh vi:
+
+- **Vượt quá giới hạn (Limit overrun):** Kẻ tấn công lợi dụng độ trễ giữa lúc hệ thống kiểm tra và cập nhật dữ liệu để vượt qua các hạn mức quy định (ví dụ: dùng 1 mã giảm giá n lần). Lỗ hổng này là một phân nhánh của TOCTOU (Time-of-check to time-of-use).
+
+- **Chuỗi nhiều bước ẩn (Hidden multi-step sequences):** Lách qua các trạng thái phụ nhanh chóng trong một quy trình xử lý phức tạp.
+
+- **Race conditions đa điểm cuối (Multi-endpoint):** Gửi đồng thời các gói tin tấn công đến nhiều đường dẫn API khác nhau cùng lúc.
+
+- **Race conditions đơn điểm cuối (Single-endpoint):** Gửi đồng thời các gói tin chứa dữ liệu khác nhau nhưng nhắm vào cùng một đường dẫn API duy nhất.
+
+- **Khởi tạo đối tượng không hoàn chỉnh (Partial construction):** Đánh vào khoảng thời gian hệ thống vừa tạo xong tài khoản nhưng chưa kịp gắn các thuộc tính bảo mật như mã băm mật khẩu hay khóa API.
+
+- **Tấn công nhạy cảm về thời gian (Time-sensitive attacks):** Khai thác các hệ thống dùng mốc thời gian (timestamps) độ phân giải cao để tạo mã bảo mật thay vì dùng chuỗi ngẫu nhiên chuẩn an toàn.
+
+## 4. Hướng dẫn khai thác thực tế
+
+### 4.1. Khai thác lỗi Vượt quá giới hạn
+
+Hãy lấy ví dụ về một cửa hàng cho phép nhập mã giảm giá 1 lần. Quy trình của máy chủ gồm: (1) Kiểm tra mã hợp lệ -> (2) Áp dụng giảm giá -> (3) Đánh dấu mã đã sử dụng.
+
+![Limit Overrun Flow](/images/vulnerabilities/race-conditions/image2.png)
+
+Khoảng hở giữa bước (1) và (3) chính là Race window. Nếu hacker gửi đồng thời 10 yêu cầu áp dụng cùng một mã giảm giá, cả 10 yêu cầu đều lọt qua bước (1) vì lúc này mã chưa bị đánh dấu ở bước (3). Kết quả: mã giảm giá được áp dụng 10 lần. Kịch bản tương tự: Rút tiền hoặc chuyển khoản quá số dư, đánh giá sản phẩm nhiều lần, đổi thẻ quà tặng nhiều lần, tái sử dụng mã CAPTCHA, vượt qua hệ thống chống dò mật khẩu.
+
+![Limit Overrun Attack](/images/vulnerabilities/race-conditions/image3.png)
+
+### 4.2. Khai thác Race conditions đa điểm cuối
+
+Kịch bản điển hình: Hacker thêm 1 món hàng vào giỏ, bấm thanh toán, rồi ngay lập tức gửi lệnh thêm 10 món hàng đắt tiền khác vào giỏ trước khi máy chủ kịp xác nhận đơn hàng. Lỗ hổng xảy ra nếu máy chủ xử lý việc xác thực thanh toán và chốt đơn đặt hàng song song nhau.
+
+![Multi-endpoint Attack 1](/images/vulnerabilities/race-conditions/image4.png)
+
+![Multi-endpoint Attack 2](/images/vulnerabilities/race-conditions/image5.png)
+
+**Mẹo xử lý khi mạng bị trễ (Network architecture & endpoint delays):**
+
+- **Làm ấm kết nối (Connection warming):** Lần đầu gửi gói tin, máy chủ mất thời gian tạo kết nối, làm các yêu cầu tấn công bị lệch nhịp. Để khắc phục, bạn có thể thêm một yêu cầu vô hại (như lệnh GET tải trang chủ) vào đầu nhóm tab trong Burp Repeater, sau đó sử dụng tùy chọn **Send group in sequence (single connection)** để thiết lập sẵn đường truyền, làm phẳng thời gian xử lý trước khi gửi loạt gói tin tấn công.
+
+- **Lợi dụng giới hạn tỷ lệ (Abusing rate or resource limits):** Nếu sử dụng công cụ Turbo Intruder để tạo một độ trễ ngắn phía máy khách, gói tin TCP sẽ bị chia nhỏ. Điều này làm vô hiệu hóa kỹ thuật Single-packet attack, khiến cuộc tấn công dễ thất bại trên các mục tiêu có độ trễ mạng cao.
+
+![Rate Limit Bypass 1](/images/vulnerabilities/race-conditions/image6.png)
+
+Giải pháp thay thế là gửi một lượng lớn gói tin rác để cố tình kích hoạt rate limit của máy chủ. Khi máy chủ bị quá tải nhẹ và chạy chậm lại, khoảng thời gian Race window sẽ giãn ra, giúp Single-packet attack hoạt động hiệu quả.
+
+![Rate Limit Bypass 2](/images/vulnerabilities/race-conditions/image7.png)
+
+### 4.3. Khai thác Race conditions đơn điểm cuối
+
+Ví dụ về chức năng quên mật khẩu: Máy chủ lưu ID người dùng và mã khôi phục vào phiên làm việc.
+
+```python
+session['reset-user'] = victim
+session['reset-token'] = 1234
+```
+
+Nếu hacker dùng chung một trình duyệt, cùng một phiên, nhưng gửi song song 2 lệnh đặt lại mật khẩu cho 2 tài khoản. Sự xung đột xảy ra: Máy chủ ghi nhận ID là của nạn nhân, nhưng lại gửi mã khôi phục về email của hacker. (Các chức năng gửi email rất dễ bị lỗi này vì quá trình gửi mail thường chạy ngầm sau khi máy chủ đã phản hồi HTTP, tạo ra Race window lớn).
+
+![Single-endpoint Attack](/images/vulnerabilities/race-conditions/image8.png)
+
+**Lưu ý:** Một số nền tảng sẽ tự động khóa phiên, chỉ xử lý từng yêu cầu một. Để lách luật, hacker sẽ tạo ra nhiều phiên đăng nhập hoàn toàn độc lập (dùng các token phiên khác nhau) để gửi yêu cầu.
+
+### 4.4. Khai thác Khởi tạo đối tượng không hoàn chỉnh
+
+Khi bạn đăng ký tài khoản, máy chủ tạo hồ sơ người dùng trước, rồi mới dùng một lệnh SQL khác để gán Khóa API. Trong tích tắc giữa 2 lệnh này, người dùng đã tồn tại nhưng Khóa API thì trống rỗng. Hacker có thể truyền một giá trị khớp với dữ liệu chưa khởi tạo (như chuỗi rỗng hoặc null trong JSON) để lọt qua vòng kiểm tra bảo mật.
+
+Nhiều nền tảng web cho phép gửi mảng dữ liệu bằng cú pháp đặc biệt. Ví dụ trong PHP:
+
+- `param[]=foo` → tương đương mảng `['foo']`
+- `param[]=foo&param[]=bar` → tương đương mảng `['foo', 'bar']`
+- `param[]` → tương đương mảng rỗng `[]`
+
+Trong Ruby on Rails, nếu truyền tham số không có giá trị (`param[key]`), máy chủ sẽ hiểu là:
+
+```ruby
+params = {"param"=>{"key"=>nil}}
+```
+
+Hacker lạm dụng cú pháp này ngay trong lúc hệ thống đang khởi tạo dở dang để gọi API trái phép:
+
+```
+GET /api/user/info?user=victim&api-key[]= HTTP/2
+Host: vulnerable-website.com
+```
+
+**Lưu ý:** Nếu mục tiêu nhắm đến là trường Mật khẩu thay vì Khóa API, hacker phải tính toán sao cho chuỗi dữ liệu truyền vào khi bị băm phải khớp chính xác với giá trị mặc định của cơ sở dữ liệu khi chưa khởi tạo.
+
+### 4.5. Khai thác hệ thống nhạy cảm về thời gian
+
+Ngay cả khi không xảy ra Race conditions, kỹ thuật gửi gói tin chuẩn xác về thời gian vẫn có thể phát hiện các lỗi khác. Nếu hệ thống lười biếng, dùng chính mốc thời gian thực để làm mã bảo mật, thay vì dùng chuỗi ngẫu nhiên chuẩn mã hóa). Hacker chỉ cần gửi đồng thời 2 yêu cầu đặt lại mật khẩu cho 2 tài khoản. Vì 2 yêu cầu đến máy chủ cùng một phần nghìn giây, máy chủ sẽ sinh ra 2 mã bảo mật giống hệt nhau.
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+Yếu tố quyết định thành bại để phát hiện Race conditions là triệt tiêu hoàn toàn độ trễ mạng và máy chủ.
+
+### 5.1. Phương pháp luận 3 bước
+
+![Phương pháp luận](/images/vulnerabilities/race-conditions/image9.png)
+
+- **Dự đoán xung đột:** Chỉ tập trung vào các API nhạy cảm có khả năng thao tác trên cùng một bản ghi dữ liệu.
+
+![Dự đoán xung đột](/images/vulnerabilities/race-conditions/image10.png)
+
+- **Thăm dò manh mối:** Ghi nhận cơ sở: Nhóm các yêu cầu trong Burp Repeater -> dùng **Send group in sequence (separate connections)**. Triệt tiêu độ trễ: Gửi đồng thời bằng **Send group in parallel**. Mọi sự khác biệt (như mã HTTP, phản hồi, email) đều là dấu hiệu tiềm năng.
+
+- **Chứng minh khái niệm:** Sàng lọc gói tin, loại bỏ yêu cầu thừa và tìm cách tái hiện lỗi một cách ổn định.
+
+### 5.2. Công cụ kiểm thử chuyên dụng
+
+**Burp Suite Repeater:**
+
+Dùng Single-packet attack: Gom 20-30 yêu cầu HTTP/2 vào chung 1 gói TCP để gửi cùng một tích tắc.
+
+![Burp Repeater](/images/vulnerabilities/race-conditions/image11.png)
+
+Bản Professional: Dùng tính năng **Trigger race conditions** để gửi song song cực nhanh chỉ với một click.
+
+**Turbo Intruder:**
+
+Dành cho kịch bản phức tạp, lượng lớn gói tin. Yêu cầu 4 bước cấu hình cho mục tiêu HTTP/2:
+
+1. Đảm bảo hỗ trợ HTTP/2.
+2. Thiết lập `engine=Engine.BURP2` và `concurrentConnections=1`.
+3. Gom nhóm yêu cầu bằng tham số `gate`.
+4. Khởi chạy bằng lệnh `openGate()`.
+
+Cấu hình mẫu Python trong Turbo Intruder:
+
+```python
+def queueRequests(target, wordlists):
+    engine = RequestEngine(endpoint=target.endpoint,
+                           concurrentConnections=1,
+                           engine=Engine.BURP2)
+    for i in range(20):
+        engine.queue(target.req, gate='1')
+    engine.openGate('1')
+```
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Vì các trạng thái phụ diễn ra ngầm và rất khó lường, việc đắp vá lỗ hổng bề nổi là không hiệu quả. Để diệt trừ tận gốc Race conditions, các kỹ sư phát triển phần mềm cần áp dụng các nguyên tắc kiến trúc sau:
+
+- **Không pha trộn dữ liệu:** Tránh việc lưu trữ và xử lý lẫn lộn dữ liệu giữa các luồng hoặc các khu vực khác nhau.
+
+- **Xử lý trọn gói (Tính nguyên tử - Atomic):** Phải tận dụng tính năng đồng bộ của cơ sở dữ liệu. Mọi thao tác logic liên quan đến nhau phải được đóng gói vào một giao dịch duy nhất. Ví dụ: Việc trừ tiền và xác nhận đơn hàng phải thành công cùng lúc, hoặc thất bại cùng lúc.
+
+- **Tận dụng tính toàn vẹn của cơ sở dữ liệu:** Sử dụng các ràng buộc ngay từ khâu thiết kế (ví dụ: gán thuộc tính Unique cho một cột dữ liệu) để tạo thêm một lớp lá chắn bảo vệ.
+
+- **Không dùng sai công năng:** Không dùng phiên đăng nhập để làm công cụ ngăn chặn xung đột thay cho cơ sở dữ liệu.
+
+- **Giữ tính nhất quán của session:** Khi cập nhật dữ liệu phiên, phải cập nhật toàn bộ trạng thái cùng lúc. Việc tối ưu hóa bằng cách cập nhật lắt nhắt từng biến độc lập là cực kỳ nguy hiểm.
+
+- **Lưu ý với hệ thống ORM:** Các thư viện ORM thường tự động che giấu các thao tác với cơ sở dữ liệu để lập trình viên viết code nhanh hơn. Tuy nhiên, bằng cách che giấu này, bản thân ORM phải chịu trách nhiệm tuyệt đối trong việc đảm bảo tính nhất quán dữ liệu.
+
+- **Chuyển sang kiến trúc phi trạng thái (Stateless):** Cân nhắc không lưu trạng thái trên máy chủ mà đẩy về phía trình duyệt bằng cách mã hóa (như sử dụng token JWT). Lưu ý, cách này sẽ đi kèm với các rủi ro bảo mật riêng của JWT cần được quản lý.

