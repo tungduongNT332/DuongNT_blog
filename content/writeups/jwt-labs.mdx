@@ -1,0 +1,256 @@
+---
+title: "JWT Authentication Labs — PortSwigger Web Security Academy"
+description: "Write-up chi tiết các bài lab về lỗ hổng xác thực JWT trên PortSwigger — bao gồm bypass signature, thuật toán none, brute-force secret key, jwk/jku header injection và kid path traversal."
+date: "2026-05-18"
+category: "writeup"
+tags: ["jwt", "authentication", "portswigger", "web-security", "burp-suite"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: JWT authentication bypass via unverified signature
+
+Mục tiêu của bài lab là truy cập vào trang admin và xoá tài khoản người dùng carlos.
+
+Khi đăng nhập vào wiener, ta thấy server đã phản hồi kèm theo JWT.
+
+![Lab 1 - JWT in response](/images/writeups/jwt-labs/image1.png)
+
+JWT được lưu ở phía client, các lần đăng nhập tiếp theo, client sẽ gửi kèm nó đi để server thực hiện xác thực và đưa ra quyết định.
+
+![Lab 1 - JWT sent with request](/images/writeups/jwt-labs/image2.png)
+
+Sau khi giải mã JWT, ta được các thông tin về tài khoản người dùng.
+
+![Lab 1 - Decoded JWT](/images/writeups/jwt-labs/image3.png)
+
+Tuy nhiên ở đây, server có đang thực hiện	 xác thực chữ ký trong JWT hay không ?, kiểm thử điều này bằng cách thay đổi một trường trong payload và gửi lại request ( từ wiener lên adminítrator ).
+
+![Lab 1 - Modify payload](/images/writeups/jwt-labs/image4.png)
+
+Thay đổi id thành admin và gửi kèm theo JWT đã bị đổi trường sub=administrator.
+
+![Lab 1 - Change sub field](/images/writeups/jwt-labs/image5.png)
+
+Ta thấy phản hồi 302, cho thấy đăng nhập thành công.
+
+![Lab 1 - 302 response](/images/writeups/jwt-labs/image6.png)
+
+Tiếp đến, thực hiện xoá tài khoản carlos -> solve lab.
+
+![Lab 1 - Delete carlos](/images/writeups/jwt-labs/image7.png)
+
+![Lab 1 - Solved](/images/writeups/jwt-labs/image8.png)
+
+## Lab 2: JWT authentication bypass via flawed signature verification
+
+Mục tiêu của bài lab là truy cập vào trang admin và xoá tài khoản người dùng carlos.
+
+![Lab 2 - Overview](/images/writeups/jwt-labs/image9.png)
+
+Trang web ở đây đã có cơ chế phòng vệ nhất định, khi ta tha đổi trường sub trong JWT và gửi lại thì nhận được phản hồi 401 Unauthorized.
+
+![Lab 2 - 401 Unauthorized](/images/writeups/jwt-labs/image10.png)
+
+Tuy nhiên, sẽ ra sao nếu ta gửi request kèm theo JWT không có phần chữ ký, server liệu có bị Misconfiguration ?
+
+Thực hiện kiểm thử bằng burp. Ta chọn "none" ở phần attack.
+
+![Lab 2 - None attack](/images/writeups/jwt-labs/image11.png)
+
+JWT khi đã bỏ phần chữ ký
+
+![Lab 2 - JWT without signature](/images/writeups/jwt-labs/image12.png)
+
+Gửi lại request.
+
+![Lab 2 - Success response](/images/writeups/jwt-labs/image13.png)
+
+Khai thác thành công, thực hiện xoá tài khoản carlos -> solve lab.
+
+![Lab 2 - Delete carlos](/images/writeups/jwt-labs/image14.png)
+
+![Lab 2 - Solved](/images/writeups/jwt-labs/image15.png)
+
+## Lab 3: JWT authentication bypass via weak signing key
+
+Mục tiêu của bài lab là truy cập vào trang admin và xoá tài khoản người dùng carlos.
+
+![Lab 3 - Overview](/images/writeups/jwt-labs/image16.png)
+
+Trang web giờ đây đã có những lớp phòng vệ nghiêm nghặt hơn, không cho phép thay đổi payload kể cả khi dùng "thuật toán "none" ".
+
+![Lab 3 - None blocked](/images/writeups/jwt-labs/image17.png)
+
+Tuy nhiên ở đây, hệ thống đã sử dụng khoá bí mật để ký dữ liệu khá yếu ( Signature = HMAC-SHA256(base64(Header) + "." + base64(Payload), SecretKey)
+
+, ta sẽ kiểm thử điều này bằng phương pháp brute-force với công cụ hatcat.
+
+Đầu tiên, lấy JWT trong request của wiener.
+
+![Lab 3 - Get JWT](/images/writeups/jwt-labs/image18.png)
+
+Chạy hatcat.
+
+![Lab 3 - Hashcat command](/images/writeups/jwt-labs/image19.png)
+
+-a 0: Chọn chế độ tấn công bằng từ điển (Straight Mode), thử từng dòng trong wordlist.
+
+-m 16500: Định danh loại mã hóa mục tiêu là cấu trúc JWT sử dụng thuật toán ký HS256.
+
+![Lab 3 - Hashcat result](/images/writeups/jwt-labs/image20.png)
+
+Brute-force thành công, lấy được khoá bí mật. Thực hiện tạo khoá trong JWT editor.
+
+![Lab 3 - Create key](/images/writeups/jwt-labs/image21.png)
+
+- kty (Key Type): Xác định loại thuật toán của khóa. Giá trị "oct" viết tắt của Octet Sequence, nghĩa là khóa đối xứng (Symmetric Key) dùng chung cho cả ký và xác thực.
+- kid (Key ID): Mã định danh duy nhất của chiếc khóa này. Nó giúp Burp Suite phân biệt giữa các khóa khác nhau khi bạn lưu nhiều khóa trong hệ thống.
+- k (Key Value): Chuỗi chứa giá trị thực tế của khóa bí mật (được mã hóa dạng Base64url). Khi bạn nhập mật khẩu bẻ khóa được vào ô trống phía trên, chuỗi mã hóa sẽ tự động xuất hiện ở đây.
+
+Tiếp theo ta sẽ sử dụng khoá này để tạo chữ ký với payload đã thay đổi trường sub từ 'wiener' thành 'administrator'.
+
+![Lab 3 - Modify payload](/images/writeups/jwt-labs/image22.png)
+
+Ấn "sign", ta được JWT hoàn chỉnh.
+
+![Lab 3 - Signed JWT](/images/writeups/jwt-labs/image23.png)
+
+Thay vào requeset và gửi lại kèm yêu cầu /admin
+
+![Lab 3 - Admin access](/images/writeups/jwt-labs/image24.png)
+
+Cuối cùng, xoá tài khoản carlos -> solve lab.
+
+![Lab 3 - Delete carlos](/images/writeups/jwt-labs/image25.png)
+
+![Lab 3 - Solved](/images/writeups/jwt-labs/image26.png)
+
+## Lab 4: JWT authentication bypass via jwk header injection
+
+Mục tiêu của bài lab là truy cập vào trang admin và xoá tài khoản người dùng carlos.
+
+![Lab 4 - Overview](/images/writeups/jwt-labs/image27.png)
+
+Trong lab này, ta sẽ kiểm thử phương pháp mã hoá bất đối xứng, để xem server có thực sự xác thực khoá công khai mà ta gửi lên hay không.
+
+Đầu tiên , ta tạo cặp khoá RSA.
+
+![Lab 4 - Create RSA key](/images/writeups/jwt-labs/image28.png)
+
+Tiếp đến, trong request GET /my-account?id=wiener HTTP/2. Ta sẽ sử dùng hình thức tấn công embedded jwk ( json web key ) dành riêng cho hệ khoá bất đối xứng.
+
+![Lab 4 - Embedded JWK attack](/images/writeups/jwt-labs/image29.png)
+
+Chọn cặp khoá RSA mà ta vừa tạo.
+
+![Lab 4 - Select RSA key](/images/writeups/jwt-labs/image30.png)
+
+Sau khi nhấn ok, ta thấy trong phần header của JWT xuất hiện trường JWK.
+
+![Lab 4 - JWK in header](/images/writeups/jwt-labs/image31.png)
+
+Đây chính là khoá công khai của chữ ký, khi ta gửi kèm JWT này lên server bị cấu hình sai, nó không kiểm tra nguồn gốc của chuỗi jwk này mà lấy luôn khoá công khai này để giải mã chữ ký, dẫn đến ouput luôn luôn hợp lệ dù cho ta có thay đổi payload thành bất cứ thứ gì !
+
+Tiếp đến, ta sẽ thay trường sub thành administrator để tạo payload giả mạo.
+
+![Lab 4 - Modify sub](/images/writeups/jwt-labs/image32.png)
+
+Gửi lại request kèm JWT này và yêu cầu vào /admin.
+
+![Lab 4 - Admin access](/images/writeups/jwt-labs/image33.png)
+
+Khai thác thành công, thực hiện xoá người dùng carlos -> solve lab.
+
+![Lab 4 - Delete carlos](/images/writeups/jwt-labs/image34.png)
+
+![Lab 4 - Solved](/images/writeups/jwt-labs/image35.png)
+
+## Lab 5: JWT authentication bypass via jku header injection
+
+Mục tiêu của bài lab là truy cập vào trang admin và xoá tài khoản người dùng carlos.
+
+![Lab 5 - Overview](/images/writeups/jwt-labs/image36.png)
+
+Trang web đang sử dụng cơ chế xác thực JWT bằng mã hoá bất đối xứng.
+
+Trong phần header của JWT, ngoài JWK ra, ta còn một trường khác mang tên JKU ( json KEY URL ), tồn tại dưới dạng một URL. Đây chính là nơi server truy cập vào để lấy khoá công khai phục vụ giải mã. Tuy nhiên, nếu server bị cấu hình lỗi ( không có Whitelist check url tin cậy ), ta hoàn toàn có thế thay URL này bằng URL chứa public key của ta !.
+
+Để kiểm thử điều này, ta sẽ dựng kịch bản như sau: Tạo ra một cặp khóa giả mạo, lưu Public Key lên một Server do ta kiểm soát (trong lab này Exploit Server được cấp sẵn). Sau đó sửa token, đổi jku trỏ về Exploit Server của mình. Server của ứng dụng sẽ tự động tải key của ta về và xác thực cho token giả mạo quyền Admin !
+
+Đầu tiên , tạo cặp khoá RSA.
+
+![Lab 5 - Create RSA key](/images/writeups/jwt-labs/image37.png)
+
+Tiếp đến, vào máy chủ khai thác và tạo một khoá công khai.
+
+![Lab 5 - Exploit server public key](/images/writeups/jwt-labs/image38.png)
+
+Tiếp theo, vào request GET /my-account?id=wiener và thêm trường JKU trỏ về server của ta trong header của JWT. ( lưu ý: thay đổi cả trường định danh khoá kid )
+
+![Lab 5 - Add JKU header](/images/writeups/jwt-labs/image39.png)
+
+Ký.
+
+![Lab 5 - Sign JWT](/images/writeups/jwt-labs/image40.png)
+
+Cuối cùng , gửi lại request kèm JWT giả mạo + yêu cầu vào trang /admin.
+
+![Lab 5 - Admin access](/images/writeups/jwt-labs/image41.png)
+
+Khai thác thành công, thực hiện xoá tài khoản carlos -> solve lab.
+
+![Lab 5 - Delete carlos](/images/writeups/jwt-labs/image42.png)
+
+![Lab 5 - Solved](/images/writeups/jwt-labs/image43.png)
+
+## Lab 6: JWT authentication bypass via kid header path traversal
+
+Mục tiêu của bài lab là truy cập vào trang admin và xoá tài khoản người dùng carlos.
+
+![Lab 6 - Overview](/images/writeups/jwt-labs/image44.png)
+
+Ở đây, ta sẽ tập trung vào trường kid  ( identify key ), trường này giúp cho server biết được nơi cất giấu khoá ( trên database hoặc trong một thư mục quản lý khoá – cần phân biệt với JKU, đây là một url của web server riêng lưu trữ khoá ).
+
+![Lab 6 - KID field](/images/writeups/jwt-labs/image45.png)
+
+Vậy sẽ ra sao nếu ta thao túng giá trị này, dẫn đến việc điều hướng server vào bất cứ thư mục nào để lấy khoá.
+
+Để làm được việc này, hệ thống chắc chắn phải bị lỗi path traversal ở trường kid.
+
+Thực hiện kiểm thử điều này, ta xây dựng một kịch bản như sau:
+
+Tạo khoá đối xứng mới trong đó k=rỗng, sửa trường KID trỏ về một file rỗng trong hệ thống của server. Vì file rỗng -> khoá rỗng, server lấy khoá (là giá trị rỗng ) đi xác thực -> trùng với khoá rỗng ta đã tạo-> xác thực luôn đúng !
+
+Đầu tiên, ta tạo khoá đối xứng với giá trị rỗng ( đã base64 encode là "AA==" )
+
+![Lab 6 - Create empty key](/images/writeups/jwt-labs/image46.png)
+
+Lưu lại, sau đó, vào request GET /my-account?id=wiener và sửa trường kid và trường sub trong JWT. ( trường kid ta tìm ra thông qua Brute-force đường dẫn )
+
+![Lab 6 - Modify kid and sub](/images/writeups/jwt-labs/image47.png)
+
+Trường kid đã trỏ về một file rỗng trên hệ thống file của server. Trường sub đã được giả mạo thành admin.
+
+Tiếp theo, ta ký lên dữ liệu này bằng khoá rỗng vừa tạo.
+
+![Lab 6 - Sign with empty key](/images/writeups/jwt-labs/image48.png)
+
+Cuối cùng , gửi lại request kèm JWT giả mạo + yêu cầu vào trang /admin.
+
+Luông hoạt động của server khi này sẽ là:
+
+Server nhận Token -> Đọc kid ->Mở file /dev/null ->Nhận được giá trị rỗng -> Dùng giá trị rỗng này để verify chữ ký -> Chữ ký khớp với Token do ta vừa ký bằng byte rỗng -> Server tin cậy Token và cấp quyền administrator.
+
+![Lab 6 - Admin access](/images/writeups/jwt-labs/image49.png)
+
+Khai thác thành công, thực hiện xoá tài khoản carlos -> solve lab.
+
+![Lab 6 - Delete carlos](/images/writeups/jwt-labs/image50.png)
+
+![Lab 6 - Solved](/images/writeups/jwt-labs/image51.png)
+
+## Tham khảo
+
+- [PortSwigger — JWT Attacks](https://portswigger.net/web-security/jwt)
+- [PortSwigger — JWT Labs](https://portswigger.net/web-security/jwt/lab-jwt-authentication-bypass-via-unverified-signature)

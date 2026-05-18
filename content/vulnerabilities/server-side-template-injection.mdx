@@ -1,0 +1,178 @@
+---
+title: "Server-side Template Injection"
+description: "Phân tích sâu về lỗ hổng Server-side Template Injection (SSTI) — từ nguyên lý hoạt động, phân loại theo nguyên nhân và ngữ cảnh, đến hướng dẫn khai thác thực tế qua chuỗi đối tượng, checklist nhận diện và cách phòng ngừa."
+date: "2026-05-17"
+category: "vulnerability"
+tags: ["ssti", "template-injection", "rce", "web-security", "server-side"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+Tiêm mã mẫu phía máy chủ hay SSTI là một lỗ hổng bảo mật vô cùng nguy hiểm. Kỹ thuật tấn công này lần đầu tiên được ghi nhận bởi đội ngũ PortSwigger Research vào năm 2015 trong bài thuyết trình mang tên "Server-Side Template Injection: RCE for the Modern Web App". Lỗ hổng xảy ra khi kẻ tấn công có thể sử dụng cú pháp mẫu nguyên bản để chèn các đoạn mã độc hại vào một tệp mẫu và sau đó đoạn mã này được thực thi trực tiếp trên máy chủ.
+
+Khác với các lỗ hổng tiêm mã phía máy khách thường chỉ ảnh hưởng đến trình duyệt của người dùng, các đoạn mã độc trong lỗ hổng này được chuyển giao và đánh giá ngay tại máy chủ. Hậu quả của SSTI mang tính tàn phá cực cao. Ở mức độ nghiêm trọng nhất, tin tặc có thể đạt được khả năng Thực thi mã từ xa (RCE), chiếm quyền kiểm soát hoàn toàn máy chủ hệ thống và dùng nó làm bàn đạp để tấn công vào hạ tầng mạng nội bộ. Ngay cả khi không thể thực thi mã, lỗ hổng này vẫn cho phép tin tặc đọc được các dữ liệu nhạy cảm và tệp tin tùy ý trên máy chủ.
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Các công cụ mẫu được thiết kế để tạo ra các trang web bằng cách kết hợp một bộ khung giao diện tĩnh với các dữ liệu động. Lỗ hổng phát sinh khi dữ liệu đầu vào của người dùng bị ghép nối trực tiếp vào tệp mẫu, thay vì được truyền vào một cách an toàn dưới dạng biến dữ liệu. Sự bất cẩn này cho phép kẻ tấn công chèn các chỉ thị mẫu tùy ý để thao túng toàn bộ công cụ mẫu.
+
+Hãy xem xét ví dụ về một email gửi lời chào cá nhân hóa sử dụng công cụ mẫu Twig. Mã nguồn an toàn sẽ trông như sau:
+
+```php
+$output = $twig->render("Dear {first_name},", array("first_name" => $user.first_name) );
+```
+
+Đoạn mã trên hoàn toàn an toàn vì tên của người dùng chỉ được truyền vào mẫu dưới dạng dữ liệu. Tuy nhiên, vì các tệp mẫu bản chất chỉ là các chuỗi văn bản, lập trình viên đôi khi ghép nối trực tiếp dữ liệu đầu vào của người dùng vào tệp mẫu trước khi xuất ra kết quả. Ví dụ hệ thống cho phép người dùng tự chọn tên hiển thị:
+
+```php
+$output = $twig->render("Dear " . $_GET['name']);
+```
+
+Trong trường hợp này, một phần của chính tệp mẫu đang được tạo động thông qua tham số GET. Vì cú pháp mẫu được đánh giá ở phía máy chủ, tin tặc có thể chèn tải trọng độc hại vào tham số tên:
+
+`http://vulnerable-website.com/?name={{bad-stuff-here}}`
+
+## 3. Các biến thể và Phân loại
+
+Lỗ hổng này thường xuất hiện dưới hai nguyên nhân chính và được phân loại theo hai ngữ cảnh khai thác:
+
+**Phân loại theo nguyên nhân:**
+
+Vô ý do thiết kế kém: Lập trình viên không lường trước được rủi ro bảo mật, tiến hành ghép nối các thành phần chứa dữ liệu người dùng trực tiếp vào mẫu. Cơ chế này rất giống với các lỗ hổng SQL Injection phát sinh do không sử dụng tham số hóa câu lệnh.
+
+Cố ý theo thiết kế nghiệp vụ: Một số trang web chủ động cho phép các đặc quyền cao như quản trị viên hoặc biên tập viên nội dung được phép chỉnh sửa hoặc gửi các tệp mẫu tùy chỉnh. Điều này tạo ra rủi ro khổng lồ nếu tài khoản của họ bị xâm phạm.
+
+**Phân loại theo ngữ cảnh khai thác:**
+
+Ngữ cảnh văn bản thuần túy: Dữ liệu người dùng được chèn trực tiếp ra ngoài dưới dạng văn bản tự do, dễ bị nhầm lẫn với lỗ hổng XSS thông thường.
+
+Ngữ cảnh mã lệnh: Dữ liệu đầu vào của người dùng được đặt ẩn bên trong một biểu thức mẫu đã có sẵn.
+
+## 4. Hướng dẫn khai thác thực tế
+
+Khi đã xác định được công cụ mẫu, việc khai thác thành công thường đi theo quy trình: Đọc tài liệu, Tìm kiếm bản khai thác, Khám phá môi trường và Tạo cuộc tấn công tùy chỉnh.
+
+![SSTI Exploitation Flow](/images/vulnerabilities/server-side-vulnerabilities/image1.png)
+
+### 4.1. Khai thác thông qua tài liệu cú pháp cơ bản
+
+Đọc tài liệu của công cụ mẫu là bước đầu tiên. Việc học cách nhúng các khối mã nguyên bản vào mẫu có thể nhanh chóng dẫn đến cách khai thác hệ thống. Ví dụ, nếu mục tiêu sử dụng công cụ Mako dựa trên Python, bạn có thể thực thi mã từ xa cực kỳ đơn giản:
+
+```python
+<%
+import os
+x=os.popen('id').read()
+%>
+${x}
+```
+
+### 4.2. Khai thác thông qua tài liệu bảo mật
+
+Các tài liệu thường có mục cảnh báo bảo mật, liệt kê các đối tượng và hàm nguy hiểm. Thậm chí nếu không có mục riêng, các hàm nhạy cảm vẫn luôn đi kèm cảnh báo. Chẳng hạn trong công cụ ERB, tài liệu tiết lộ cách liệt kê thư mục và đọc tệp tùy ý trên máy chủ:
+
+```erb
+<%= Dir.entries('/') %>
+<%= File.open('/example/arbitrary-file').read %>
+```
+
+### 4.3. Tìm kiếm các bản khai thác đã biết
+
+Sau khi xác định được công cụ mẫu, bạn nên tìm kiếm trên Internet xem có ai đã từng phát hiện và công bố lỗ hổng tương tự chưa. Vì một số công cụ mẫu được sử dụng cực kỳ phổ biến, bạn hoàn toàn có thể tìm thấy các mã khai thác đã được ghi chép đầy đủ, từ đó có thể tinh chỉnh lại một chút để áp dụng cho mục tiêu của mình.
+
+### 4.4. Khám phá môi trường và các đối tượng ẩn
+
+Nhiều công cụ mẫu cung cấp các đối tượng tự tham chiếu như self hoặc environment, hoạt động như một không gian tên chứa tất cả các đối tượng và phương thức được hỗ trợ. Trong các công cụ dựa trên Java, bạn có thể liệt kê tất cả các biến môi trường bằng tải trọng sau:
+
+```java
+${T(java.lang.System).getenv()}
+```
+
+Đối với người dùng Burp Suite Professional, công cụ Intruder cung cấp sẵn một danh sách từ khóa chuyên dụng để vét cạn tên các biến. Cần lưu ý rằng, mặc dù SSTI có thể dẫn đến Thực thi mã từ xa (RCE), nhưng trong thực tế không phải lúc nào cũng đạt được điều này. Tuy nhiên, nếu bạn đã loại trừ được khả năng RCE, đừng vội bỏ cuộc. Bạn vẫn có thể tận dụng lỗ hổng này cho các cuộc tấn công nghiêm trọng khác, chẳng hạn như duyệt đường dẫn tệp để truy cập dữ liệu nhạy cảm.
+
+### 4.5. Xây dựng mã khai thác tùy chỉnh bằng Chuỗi đối tượng
+
+Khi hệ thống áp dụng các cơ chế bảo vệ như hộp cát, bạn cần rà soát từng phương thức và xây dựng một chuỗi đối tượng phức tạp. Khi nghiên cứu tài liệu về các đối tượng, hãy đặc biệt chú ý đến các phương thức mà các đối tượng này cấp quyền truy cập, cũng như các đối tượng mà chúng trả về. Bằng cách đào sâu vào tài liệu, bạn có thể khám phá ra sự kết hợp của các đối tượng và phương thức mà bạn có thể xâu chuỗi lại với nhau để chạm tới chức năng nguy hiểm nằm ngoài tầm với ban đầu.
+
+Ví dụ trong công cụ Velocity của Java, bạn có quyền truy cập vào công cụ lớp tên là $class. Bằng cách xâu chuỗi phương thức $class.inspect() và thuộc tính $class.type, bạn có thể lấy được tham chiếu đến các đối tượng tùy ý và thực thi lệnh hệ thống:
+
+```java
+$class.inspect("java.lang.Runtime").type.getRuntime().exec("bad-stuff-here")
+```
+
+### 4.6. Xây dựng mã khai thác tùy chỉnh qua Đối tượng do lập trình viên cung cấp
+
+Một số công cụ mẫu chạy trong môi trường bảo mật, bị khóa chặt (locked-down) theo mặc định để giảm thiểu rủi ro tối đa. Mặc dù điều này khiến việc khai thác RCE trở nên khó khăn, nhưng các đối tượng do chính lập trình viên tạo ra và hiển thị trên mẫu lại cung cấp một bề mặt tấn công rộng hơn và ít được kiểm định bảo mật (battle-hardened) hơn.
+
+Tuy nhiên, trong khi các đối tượng tích hợp sẵn của công cụ mẫu thường có tài liệu hướng dẫn đầy đủ, các đối tượng mang tính đặc thù của riêng trang web gần như chắc chắn không có bất kỳ tài liệu nào. Do đó, để tìm ra cách khai thác chúng, bạn sẽ phải điều tra hành vi của trang web một cách thủ công nhằm xác định bề mặt tấn công và tự xây dựng mã khai thác tùy chỉnh cho riêng mình.
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+Lỗ hổng này thường không bị phát hiện vì chúng chỉ lộ diện khi có người chủ động tìm kiếm. Giống như bất kỳ lỗ hổng nào, bước đầu tiên để khai thác là phải tìm ra nó. Nếu bạn có thể phát hiện ra sự hiện diện của lỗ hổng, việc khai thác có thể dễ dàng một cách đáng ngạc nhiên, đặc biệt là trong các môi trường không có hộp cát (unsandboxed environments).
+
+### 5.1. Dò tìm và Phát hiện
+
+Bắt đầu bằng cách thử nghiệm tệp mẫu với một chuỗi các ký tự đặc biệt như `${{<%[%'"}}%\`. Nếu máy chủ ném ra lỗi, chứng tỏ cú pháp này đang được đánh giá. Cần kiểm tra cụ thể theo hai ngữ cảnh:
+
+**Phát hiện trong Ngữ cảnh văn bản thuần túy:** Nhiều công cụ cho phép chèn lệnh toán học. Ví dụ trong công cụ Freemarker, dòng render('Hello ' + username) sẽ xuất ra kết quả như Hello Carlos. Để kiểm tra xem đây là XSS hay lỗ hổng mẫu, hãy chèn một phép toán:
+
+`http://vulnerable-website.com/?username=${7*7}`
+
+Nếu kết quả trả về là Hello 49, chứng tỏ máy chủ đã thực thi phép toán và hệ thống đang tồn tại lỗ hổng SSTI.
+
+**Phát hiện trong Ngữ cảnh mã lệnh:** Giả sử dữ liệu của bạn bị nhốt bên trong một biểu thức:
+
+```
+greeting = getQueryParameter('greeting')
+engine.render("Hello {{"+greeting+"}}", data)
+```
+
+Khi đó, URL trả về sẽ trông giống như sau: http://vulnerable-website.com/?greeting=data.username Ngữ cảnh này rất dễ bị bỏ qua vì nó không gây ra XSS rõ ràng. Một phương pháp để kiểm tra là trước tiên xác định xem tham số có chứa lỗ hổng XSS trực tiếp hay không bằng cách chèn thẻ HTML tùy ý vào giá trị:
+
+`http://vulnerable-website.com/?greeting=data.username<tag>`
+
+Nếu không có XSS, kết quả thường sẽ trả về một mục trống (chỉ hiện chữ Hello), các thẻ HTML bị mã hóa hoặc một thông báo lỗi. Bước tiếp theo là cố gắng phá vỡ câu lệnh bằng cú pháp mẫu và chèn thẻ HTML tùy ý theo sau:
+
+`http://vulnerable-website.com/?greeting=data.username}}<tag>`
+
+Nếu kết quả xuất ra là `Hello Carlos<tag>`, bạn đã phá vỡ thành công biểu thức mẫu và chứng minh được hệ thống dính lỗ hổng SSTI.
+
+### 5.2. Xác định công cụ mẫu
+
+Các ngôn ngữ mẫu dùng cú pháp khá giống nhau để không xung đột với HTML.
+
+**Gửi cú pháp sai lệch:** Đôi khi chỉ cần gửi cú pháp không hợp lệ, hệ thống sẽ trả về lỗi chi tiết tiết lộ luôn tên công cụ và phiên bản. Ví dụ, việc gửi biểu thức `<%=foobar%>` sẽ kích hoạt phản hồi sau từ công cụ ERB dựa trên Ruby:
+
+```
+(erb):1:in `<main>': undefined local variable or method `foobar' for main:Object (NameError)
+from /usr/lib/ruby/2.5.0/erb.rb:876:in `eval'
+from /usr/lib/ruby/2.5.0/erb.rb:876:in `result'
+from -e:4:in `<main>'
+```
+
+**Sử dụng cây quyết định:** Nếu không có thông báo lỗi, bạn sẽ cần kiểm tra thủ công các tải trọng đặc thù của từng ngôn ngữ và nghiên cứu cách công cụ mẫu diễn giải chúng. Bằng cách sử dụng quy trình loại trừ dựa trên cú pháp nào hợp lệ hoặc không hợp lệ, bạn có thể thu hẹp các tùy chọn nhanh hơn bạn nghĩ. Thông thường là thông qua các phép toán. Tuy nhiên, hãy cực kỳ cẩn thận vì một tải trọng có thể hợp lệ trên nhiều công cụ. Ví dụ, tải trọng `{{7*'7'}}` sẽ trả về 49 trong Twig, nhưng lại trả về 7777777 trong Jinja2. Do đó, không nên kết luận vội vàng chỉ dựa trên một kết quả trả về thành công duy nhất.
+
+![SSTI Decision Tree](/images/vulnerabilities/server-side-vulnerabilities/image2.png)
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Không trao quyền chỉnh sửa: Cách tốt nhất là tuyệt đối không cho phép bất kỳ người dùng nào sửa đổi hoặc gửi các tệp mẫu mới.
+
+Sử dụng công cụ mẫu phi logic: Nếu phải cho phép người dùng tùy chỉnh, hãy sử dụng các công cụ mẫu phi logic như Mustache. Việc tách bạch hoàn toàn phần logic ra khỏi phần trình bày sẽ giảm thiểu tối đa rủi ro bị tấn công.
+
+Không ghép chuỗi dữ liệu: Dữ liệu người dùng phải luôn được truyền vào tệp mẫu dưới dạng biến tham số độc lập, tuyệt đối không ghép nối văn bản vào mẫu trước khi kết xuất.
+
+Thiết lập môi trường Hộp cát: Chỉ thực thi mã của người dùng trong môi trường hộp cát nơi các hàm và phân hệ nguy hiểm đã bị loại bỏ. Tuy nhiên, việc xây dựng hộp cát hoàn hảo là vô cùng khó khăn và vẫn có khả năng bị vượt qua.
+
+Cách ly hệ thống: Thừa nhận rằng việc thực thi mã là khó tránh khỏi và áp dụng cơ chế bảo vệ hệ thống bằng cách triển khai môi trường kết xuất mẫu bên trong một bộ chứa Docker bị khóa chặt.
+
+## Tham khảo
+
+- [PortSwigger — Server-side Template Injection](https://portswigger.net/web-security/server-side-template-injection)
+- [PortSwigger Research — Server-Side Template Injection: RCE for the Modern Web App](https://portswigger.net/research/server-side-template-injection)
+- [HackTricks — SSTI (Server Side Template Injection)](https://book.hacktricks.xyz/pentesting-web/ssti-server-side-template-injection)

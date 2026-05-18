@@ -1,0 +1,206 @@
+---
+title: "Lỗ Hổng Xác Thực OAuth 2.0"
+description: "Phân tích sâu về các lỗ hổng bảo mật trong giao thức OAuth 2.0 và OpenID Connect — từ sai sót trong triển khai luồng mã cấp quyền, luồng ẩn, đến các kỹ thuật đánh cắp mã thông báo, nâng cấp đặc quyền và SSRF."
+date: "2026-05-14"
+category: "vulnerability"
+tags: ["oauth2", "openid-connect", "authentication", "web-security", "ssrf", "xss", "csrf"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+Trong quá trình lướt web, bạn chắc chắn đã bắt gặp tính năng đăng nhập bằng tài khoản mạng xã hội. Tính năng tiện lợi này hầu hết được xây dựng trên nền tảng OAuth 2.0. Đây là mục tiêu cực kỳ hấp dẫn đối với giới tin tặc vì nó rất phổ biến nhưng lại rất dễ xảy ra sai sót trong lúc cài đặt và vận hành.
+
+Dưới góc độ người dùng, kết quả của xác thực OAuth khá giống với cơ chế đăng nhập một lần SSO. Những sai lầm khi triển khai sẽ tạo cơ hội cho kẻ tấn công lấy trộm dữ liệu nhạy cảm hoặc thậm chí là chiếm đoạt hoàn toàn tài khoản người dùng. Xin lưu ý, bài viết này chỉ áp dụng cho phiên bản chuẩn hiện tại là OAuth 2.0, hoàn toàn khác với phiên bản cũ 1a.
+
+![OAuth Image](/images/vulnerabilities/oauth-authentication-vulnerabilities/image1.png)
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+Để hiểu tại sao lỗ hổng lại xuất hiện, chúng ta cần nắm rõ cách các bên trao đổi dữ liệu và quyền hạn trong hệ thống OAuth 2.0.
+
+### 2.1. Cách thức hoạt động cốt lõi
+
+Về bản chất, OAuth là một quy trình trao đổi quyền. Nó cho phép một trang web hỏi mượn quyền truy cập vào tài khoản của bạn trên một nền tảng khác (như Facebook, Google) mà không cần bạn phải đưa mật khẩu cho trang web đó. Điều này giúp bạn kiểm soát chính xác lượng dữ liệu muốn chia sẻ (ví dụ: chỉ cho phép xem danh bạ để tìm bạn bè) thay vì giao nộp toàn bộ tài khoản.
+Quy trình này gồm ba bên tham gia:
+
+- **Ứng dụng khách:** trang web hoặc ứng dụng muốn mượn dữ liệu của người dùng.
+
+- **Chủ sở hữu tài nguyên:** chính là người dùng đang giữ dữ liệu.
+
+- **Nhà cung cấp dịch vụ oauth:** nền tảng đang nắm giữ dữ liệu người dùng, cung cấp các cổng kết nối để ứng dụng khách vào xin quyền.
+
+Có nhiều cách để thực hiện quy trình này, gọi là các luồng cấp phép. Hai cách phổ biến nhất là luồng mã cấp quyền và luồng ẩn.
+
+### 2.2. Chi tiết về luồng mã cấp quyền
+
+Đây là cách làm an toàn nhất vì các thông tin quan trọng được trao đổi trực tiếp giữa hai máy chủ thông qua một đường truyền riêng bí mật. Đường truyền này được thiết lập khi ứng dụng khách đăng ký với hệ thống OAuth bằng một khóa bí mật.
+Bước 1: Gửi yêu cầu. ứng dụng khách chuyển người dùng sang trang của máy chủ OAuth.
+
+```http
+GET /authorization?client_id=12345&redirect_uri=https://client-app.com/callback&response_type=code&scope=openid%20profile&state=ae13d489bd00e3c24 HTTP/1.1
+Host: oauth-authorization-server.com
+```
+
+Các thông số cần lưu ý:
+
+- `client_id`: mã số định danh riêng của ứng dụng khách.
+
+- `redirect_uri`: địa chỉ chuyển hướng, nơi máy chủ sẽ trả kết quả về sau khi xong việc.
+
+- `response_type`: với luồng này, giá trị luôn là code.
+
+- `scope`: phạm vi dữ liệu muốn mượn (ví dụ
+
+- `state`: một mã số ngẫu nhiên dùng để kiểm tra xem yêu cầu trả về có đúng là yêu cầu ban đầu hay không, giúp chống lại các trò lừa đảo.
+
+Bước 2: Đăng nhập và đồng ý. người dùng đăng nhập vào nền tảng OAuth và bấm xác nhận đồng ý cho mượn quyền.
+
+Bước 3: Trả về mã quyền. máy chủ OAuth chuyển người dùng quay lại ứng dụng khách kèm theo một mã số tạm thời (authorization code).
+
+```http
+GET /callback?code=a1b2c3d4e5f6g7h8&state=ae13d489bd00e3c24 HTTP/1.1
+Host: client-app.com
+```
+
+Bước 4: Đổi mã lấy mã thông báo. ứng dụng khách gửi mã tạm thời này cùng với khóa bí mật lên máy chủ OAuth qua đường truyền riêng giữa hai máy chủ.
+
+```http
+POST /token HTTP/1.1
+Host: oauth-authorization-server.com
+…
+client_id=12345&client_secret=SECRET&redirect_uri=https://client-app.com/callback&grant_type=authorization_code&code=a1b2c3d4e5f6g7h8
+```
+
+Bước 5: Cấp mã thông báo. máy chủ OAuth kiểm tra và trả về mã thông báo truy cập (access token).
+
+```json
+{
+"access_token": "z0y9x8w7v6u5",
+"token_type": "Bearer",
+"expires_in": 3600,
+"scope": "openid profile"
+}
+```
+
+Bước 6 và 7: Lấy dữ liệu. ứng dụng khách dùng mã thông báo này để vào lấy thông tin người dùng từ máy chủ tài nguyên.
+
+```http
+GET /userinfo HTTP/1.1
+Host: oauth-resource-server.com
+Authorization: Bearer z0y9x8w7v6u5
+```
+
+![OAuth Image](/images/vulnerabilities/oauth-authentication-vulnerabilities/image2.png)
+
+### 2.3. Chi tiết về luồng ẩn
+
+Luồng này đơn giản hơn, thường dùng cho các ứng dụng chạy hoàn toàn trên trình duyệt mà không có máy chủ riêng để giữ khóa bí mật. Cách này kém an toàn hơn vì mã thông báo được gửi trực tiếp qua trình duyệt của người dùng.
+Bước 1: Yêu cầu quyền với response_type=token. Bước 2 và 3: Trả về mã thông báo. sau khi đồng ý, máy chủ chuyển trình duyệt quay lại ứng dụng khách và kẹp mã thông báo ngay trên thanh địa chỉ.
+
+```http
+GET /callback#access_token=z0y9x8w7v6u5&token_type=Bearer&expires_in=5000&scope=openid%20profile&state=ae13d489bd00e3c24 HTTP/1.1
+Host: client-app.com
+```
+
+Bước 4 và 5: ứng dụng khách dùng mã JavaScript trên trình duyệt để lấy mã thông báo đó và đi lấy dữ liệu.
+
+![OAuth Image](/images/vulnerabilities/oauth-authentication-vulnerabilities/image3.png)
+
+### 2.4. Sự tiến hóa OpenID Connect
+
+OAuth ban đầu chỉ dùng để mượn quyền, không dùng để xác minh danh tính. Giao thức OpenID Connect ra đời để chuẩn hóa việc này bằng cách thêm một lớp nhận diện.
+Tính năng quan trọng nhất là mã thông báo ID (id_token). Thay vì phải gửi thêm một yêu cầu riêng để hỏi tên tuổi người dùng, mã thông báo ID này chứa sẵn mọi thông tin cần thiết và được gửi ngay khi người dùng đăng nhập xong. Điều này giúp hệ thống xử lý nhanh gọn hơn vì giảm bớt được các bước trao đổi dư thừa.
+
+Mã thông báo ID được bảo vệ bằng chữ ký số để tránh bị sửa đổi. Tuy nhiên, nếu các khóa dùng để kiểm tra chữ ký bị lộ hoặc bị đánh chặn trên đường truyền, hệ thống vẫn gặp nguy hiểm.
+
+### 2.5. Tại sao lỗ hổng xác thực OAuth phát sinh? (Nguyên lý lỗi)
+
+Lỗ hổng xảy ra chủ yếu do ba lý do:
+Quy tắc quá lỏng lẻo: tài liệu hướng dẫn OAuth được viết rất linh hoạt, nhiều bước bảo mật là "tùy chọn" chứ không bắt buộc. Điều này khiến lập trình viên dễ chọn cách làm đơn giản nhưng thiếu an toàn.
+
+Không có bảo vệ sẵn: OAuth không tự bảo vệ mình. Độ an toàn hoàn toàn phụ thuộc vào việc nhà phát triển có biết cách cài đặt thêm các bước kiểm tra (như xác thực mã trạng thái, kiểm tra đầu vào) hay không.
+
+Dữ liệu đi qua trình duyệt: nhiều luồng OAuth gửi thông tin cực kỳ nhạy cảm thông qua trình duyệt của người dùng. Đây là nơi kẻ tấn công dễ dàng can thiệp, sửa đổi hoặc đánh cắp dữ liệu nếu đường dẫn chuyển hướng không được quản lý chặt chẽ.
+
+## 3. Các biến thể và Phân loại
+Bề mặt tấn công của OAuth rất rộng, được chia thành các nhóm chính:
+
+**Tại ứng dụng khách: cài đặt sai luồng ẩn, tin tưởng mù quáng vào dữ liệu từ trình duyệt, hoặc quên không dùng tham số trạng thái.**
+
+**Tại nhà cung cấp dịch vụ OAuth: kiểm tra địa chỉ chuyển hướng không kỹ, cấp quyền quá rộng hoặc cho phép đăng ký người dùng mà không cần xác thực email.**
+
+**Lỗ hổng từ lớp OpenID Connect: các tính năng tự động đăng ký hoặc yêu cầu qua liên kết trung gian thiếu bảo mật.**
+
+## 4. Hướng dẫn khai thác thực tế
+### 4.1. Khai thác sự tin tưởng mù quáng trong luồng ẩn
+
+Sau khi lấy được mã thông báo, ứng dụng khách thường gửi mã này cùng với ID người dùng lên máy chủ để duy trì đăng nhập. Lỗ hổng là máy chủ không có cách nào kiểm tra xem mã đó có đúng là của ID kia hay không. Kẻ tấn công có thể chặn gói tin này, đổi ID thành của nạn nhân và máy chủ sẽ tự động cho chúng vào tài khoản nạn nhân.
+Hơn nữa, vì luồng ẩn diễn ra hoàn toàn trên trình duyệt, hacker có thể dùng mã thông báo lấy trộm được để tự gọi các cổng kết nối của máy chủ tài nguyên, từ đó lấy được những dữ liệu bí mật mà ứng dụng bình thường không bao giờ cho xem.
+
+### 4.2. Lỗ hổng thiếu bảo vệ tham số trạng thái
+
+Nếu ứng dụng không dùng tham số state, hacker có thể tự tạo ra một liên kết đăng nhập của riêng chúng và lừa nạn nhân bấm vào. Nếu nạn nhân nhấp vào, họ sẽ vô tình đăng nhập vào tài khoản của hacker hoặc tệ hơn là liên kết tài khoản cá nhân của họ với tài khoản mạng xã hội của hacker, giúp hacker chiếm luôn quyền điều khiển.
+### 4.3. Đánh cắp mã thông báo qua lỗi đường dẫn chuyển hướng
+
+Nếu hệ thống kiểm tra địa chỉ chuyển hướng lỏng lẻo, hacker có thể ép máy chủ gửi mã thông báo về trang web của chúng. Các chiêu trò bao gồm:
+Thử thêm các đường dẫn phụ hoặc tham số lạ vào địa chỉ hợp lệ.
+
+Gửi cùng lúc hai địa chỉ chuyển hướng để máy chủ bị bối rối.
+
+Sử dụng các tên miền trông giống tên miền hệ thống nhưng thực chất là của hacker (ví dụ: localhost.evil.net).
+
+### 4.4. Đánh cắp mã thông báo qua trang trung gian
+
+Nếu máy chủ chặn hoàn toàn tên miền lạ, hacker sẽ tìm cách chuyển hướng mã thông báo đến một trang khác nằm ngay trên chính trang web của ứng dụng khách (ví dụ dùng lỗi lùi thư mục ../../). Tại trang này, hacker sẽ dùng các lỗ hổng khác như chuyển hướng mở, tấn công XSS hoặc tiêm mã HTML để tuồn mã thông báo ra ngoài.
+Đặc biệt, việc đánh cắp mã qua XSS cực kỳ nguy hiểm vì nó giúp hacker duy trì quyền truy cập ổn định trong thời gian dài mà không bị cản trở bởi các lớp bảo vệ thông thường của trình duyệt.
+
+### 4.5. Tự ý nâng cấp đặc quyền
+
+Kẻ tấn công có thể đăng ký một ứng dụng "hiền lành" để xin quyền cơ bản, sau đó âm thầm thêm các quyền nhạy cảm khác vào gói tin đổi mã thông báo. Nếu máy chủ không đối chiếu lại với yêu cầu ban đầu, nó sẽ cấp cho hacker những quyền hạn vượt mức cho phép.
+### 4.6. Lợi dụng việc không xác thực email khi đăng ký
+
+Hacker có thể tạo tài khoản trên nhà cung cấp OAuth bằng chính email của nạn nhân nếu nhà cung cấp đó không yêu cầu xác thực email. Khi nạn nhân dùng email đó để đăng nhập vào ứng dụng khách, hệ thống sẽ tự động ghép nối tài khoản của hacker với nạn nhân, trao quyền kiểm soát cho kẻ tấn công.
+### 4.7. Khai thác OpenID Connect qua các tính năng tự động
+
+Hacker có thể gửi yêu cầu đến cổng đăng ký tự động của OpenID để cài đặt các cấu hình giả mạo. Nếu máy chủ truy cập vào các liên kết độc hại trong cấu hình này để lấy dữ liệu, nó sẽ tạo ra lỗ hổng SSRF, giúp hacker thâm nhập sâu vào mạng nội bộ của hệ thống.
+## 5. Checklist Kiểm thử và Nhận diện
+Các bước kiểm tra dành cho chuyên gia:
+
+Theo dõi toàn bộ luồng trao đổi dữ liệu qua Burp Suite để tìm các thông số như client_id, redirect_uri.
+
+Kiểm tra các tệp cấu hình công khai tại đường dẫn /.well-known/ để tìm các tính năng ẩn.
+
+Thử nghiệm OpenID: chủ động thêm chữ openid vào yêu cầu để xem hệ thống có hỗ trợ ngầm giao thức này hay không.
+
+Thử nghiệm luồng ẩn: chặn gói tin trả mã thông báo và đổi ID người dùng để xem có chiếm được tài khoản người khác không.
+
+Kiểm tra độ ngẫu nhiên: xác minh xem tham số state có tồn tại và có khó đoán hay không.
+
+Thử sai địa chỉ chuyển hướng: dùng các kỹ thuật nối tên miền, đổi chế độ phản hồi để tìm cách lách bộ lọc của máy chủ.
+
+## 6. Cách phòng ngừa và Khắc phục
+Đối với nhà cung cấp dịch vụ:
+
+Bắt buộc ứng dụng khách phải đăng ký một danh sách địa chỉ chuyển hướng cố định và đối chiếu chính xác từng ký tự một.
+
+Yêu cầu dùng tham số trạng thái và gắn nó với phiên làm việc của người dùng.
+
+Phải kiểm tra kỹ xem mã thông báo được cấp cho ai và có đúng quyền hạn hay không trước khi trả dữ liệu.
+
+Đối với ứng dụng khách:
+
+Phải hiểu rõ bản chất dữ liệu đang xử lý ở từng bước.
+
+Luôn sử dụng tham số trạng thái dù luật không bắt buộc.
+
+Gửi địa chỉ chuyển hướng ở cả bước xin mã và bước đổi mã thông báo để tăng độ bảo mật.
+
+Dùng thêm các cơ chế bảo vệ mã cấp quyền (như PKCE) cho các ứng dụng di động hoặc ứng dụng máy tính.
+
+Kiểm tra kỹ chữ ký số nếu dùng OpenID Connect.
+
+Tuyệt đối không để lộ mã quyền trên các tập lệnh hoặc hình ảnh tải từ bên ngoài để tránh bị rò rỉ qua thông tin giới thiệu.

@@ -1,0 +1,221 @@
+---
+title: "HTTP Host Header Attacks Labs — PortSwigger Web Security Academy"
+description: "Tổng hợp các bài lab thực hành về tấn công HTTP Host Header trên PortSwigger Web Security Academy. Bao gồm các kỹ thuật Password reset poisoning, Authentication bypass, Web cache poisoning qua ambiguous requests, SSRF dựa trên định tuyến, SSRF qua lỗi phân tích cú pháp (parsing) và Connection state attack."
+date: "2026-05-14"
+category: "writeup"
+tags: ["http-host-header", "portswigger", "writeup", "ssrf", "cache-poisoning", "password-reset-poisoning", "authentication-bypass"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: Basic password reset poisoning
+
+Mục tiêu của bài lab này là lấy được mật khẩu và đăng nhập vào carlos thông qua HTTP Host header attacks.
+
+![Lab Basic password reset poisoning](/images/writeups/http-host-header-labs/image1.png)
+
+Trang web có chức năng đổi mật khẩu của người dùng, đường link đổi mật khẩu sẽ được gửi đến email của họ.
+
+![Chức năng đổi mật khẩu](/images/writeups/http-host-header-labs/image2.png)
+
+![Email client](/images/writeups/http-host-header-labs/image3.png)
+
+![Yêu cầu đổi mật khẩu](/images/writeups/http-host-header-labs/image4.png)
+
+Khi ta nhập tên người dùng để yêu cầu đổi mật khẩu , trong burp xuất hiện Post Request
+
+![Post Request trong Burp](/images/writeups/http-host-header-labs/image5.png)
+
+Ta có thể thấy, nơi mà request này gửi đến phụ thuộc hoàn toàn vào trường Host, ta kiểm thử điều này bằng cách thay thế trường này và gửi lại request.
+
+![Kiểm thử trường Host](/images/writeups/http-host-header-labs/image6.png)
+
+![Kết quả kiểm thử](/images/writeups/http-host-header-labs/image7.png)
+
+Đây chính là lỗ hổng, hệ thống hoàn toàn tin tưởng vào host-header, vậy ta sẽ thực hiện tạo một request giả với trường Host trỏ về server của ta.
+
+![Request giả mạo](/images/writeups/http-host-header-labs/image8.png)
+
+Sau khi request này được gửi đi, server sẽ tạo riêng một token để đặt lại mật khẩu cho carlos và gửi email đặt lại mật khẩu cho carlos, hệ thống đã mô phỏng carlos đã check và ấn vào email giả mạo đó.
+
+![Token được gửi về server](/images/writeups/http-host-header-labs/image9.png)
+
+Token của carlos từ đó được gửi về server của ta. Thực hiện thay token đó vào url và ta sẽ vào được trang đổi mật khẩu cho tài khoản carlos
+
+![Trang đổi mật khẩu](/images/writeups/http-host-header-labs/image10.png)
+
+Đổi mật khẩu và đăng nhập vào carlos -> solve lab
+
+![Solve lab](/images/writeups/http-host-header-labs/image11.png)
+
+## Lab 2: Host header authentication bypass
+
+Mục tiêu của bài lab làn truy cập vào trang admin và xoá tài khoản carlos.
+
+![Lab Host header authentication bypass](/images/writeups/http-host-header-labs/image12.png)
+
+Trong file `/robots.txt` của trang web, dev đã giấu đường dẫn admin ở đây để tránh các công cụ tìm kiếm tìm ra đường dẫn nhạy cảm.
+
+![File robots.txt](/images/writeups/http-host-header-labs/image13.png)
+
+Tuy nhiên, người dùng bình thường không có quyền truy cập vào endpoint này
+
+![Bị từ chối truy cập](/images/writeups/http-host-header-labs/image14.png)
+
+Dev đã mắc sai lầm khi để hiện ra thông báo trên, chỉ những người dùng nội bộ mới có quyền truy nhập.
+
+![Thông báo truy cập nội bộ](/images/writeups/http-host-header-labs/image15.png)
+
+Vậy ta có thể giả mạo nguồn gửi request thành localhost bằng những cách nào ?
+
+Ở đây, trang web đã bị dính lỗi HTTP Host Header, nó nhìn vào trường Host để định danh nơi đã gửi request này, từ đó quyết định cho phép truy cập vào trang admin hay không.
+
+Vậy ta sẽ thay trường Host, chứng minh request này tới từ người dùng nội bộ ( ở đây là localhost ) để bypass bộ lọc này.
+
+![Bypass bằng localhost](/images/writeups/http-host-header-labs/image16.png)
+
+Khai thác thành công. Truy cập vào trang admin và xoá người dùng carlos -> solve lab
+
+![Xoá người dùng carlos](/images/writeups/http-host-header-labs/image17.png)
+
+![Solve lab](/images/writeups/http-host-header-labs/image18.png)
+
+## Lab 3: Web cache poisoning via ambiguous requests
+
+Mục tiêu của bài lab này là thực thi `alert(document.cookie)` trong trình duyệt của nạn nhân.
+
+![Lab Web cache poisoning via ambiguous requests](/images/writeups/http-host-header-labs/image19.png)
+
+Trang web có một bộ nhớ đệm cache và hiện tại đã có cơ chế ngăn ngừa http host injection.
+
+![Cơ chế ngăn ngừa](/images/writeups/http-host-header-labs/image20.png)
+
+Nhưng khi ta thêm một trường Host nữa vào request thì lại thành công, điều này có ý nghĩa gì ?
+
+![Thêm trường Host thứ hai](/images/writeups/http-host-header-labs/image21.png)
+
+Có vẻ như font-end đang fillter theo giá trị Host thứ nhất nhưng back-end lại xử lý giá trị còn lại. Sự không đồng bộ này đã gây ra lỗ hổng cho trang web này.
+
+Ở trong phản hồi của request này, có một file JS được server tạo ra từ Host giả mạo của ta được gửi kèm.
+
+![File JS từ Host giả mạo](/images/writeups/http-host-header-labs/image22.png)
+
+Thông thường, File này dùng để ghi một thẻ `<img>` vào trang web nhằm mục đích theo dõi (tracking) lượt xem trang. Đây là một hành vi hoàn toàn hợp lệ của ứng dụng.
+
+![Nội dung file JS](/images/writeups/http-host-header-labs/image23.png)
+
+Từ ý tưởng trên, ta hoàn toàn có thể điều hướng trang web đến một Host bất kỳ, và tài file tracking.js từ đó về và thực thi. Khi này, nếu ta gửi request đến 2 lần, bộ nhớ cache sẽ lưu nó lại ( HIT ) và phải hồi nó cho tất cả những người dùng khác ( stored XSS ).
+
+Sử dụng máy chủ khai thác để làm điều này.
+
+Đầu tiên, ta tạo một file chứa mã độc trên máy chủ của ta.
+
+![Tạo file mã độc trên exploit server](/images/writeups/http-host-header-labs/image24.png)
+
+Tiếp đến, trong repeater, ta sẽ thay đổi trường Host thứ 2 để nó trỏ về server của ta. Khi này server sẽ vào trang của ta và tải file tracking.js chứa mã độc đồng thời thực thi nó. Bộ nhớ cache sẽ lưu file này lại để phản hồi cho tất cả người dùng đến sau. Hệ thống đã mô phỏng nạn nhân đã truy cập trang của họ và bị dính mã độc ( alert hiện lên )
+
+![Khai thác Web cache poisoning](/images/writeups/http-host-header-labs/image25.png)
+
+Khai thác thành công.
+
+![Solve lab](/images/writeups/http-host-header-labs/image26.png)
+
+## Lab 4: Routing-based SSRF
+
+Mục tiêu của bài lab này là đăng nhập vào admin và xoá người dùng carlos.
+
+![Lab Routing-based SSRF](/images/writeups/http-host-header-labs/image27.png)
+
+Đầu tiên ta sẽ kiểm tra xem server có đang tin tưởng vào HTTP Host Header hay không bằng cách thay thế nó bằng máy chủ collaborator của ta và gửi lại request.
+
+![Kiểm tra Host header trust](/images/writeups/http-host-header-labs/image28.png)
+
+Yêu cầu đã được điều hướng tới thành công, đoạn mã nhận được từ collaborator chính là bằng chứng.
+
+Phản hồi trong collaborator cho thấy nó được gửi tới từ nhiều địa chỉ IP khác nhau. Điều này cho thấy hệ thống không phải là một chiếc máy tính đơn lẻ, mà là một cụm (cluster) các dịch vụ.
+
+Vì hệ thống tin tưởng vào trường Host, nên ta sẽ brute force trường này trong dải ip 192.168.0.0/24 để truy cập vào trang admin thông qua burp intruder.
+
+![Brute force IP nội bộ](/images/writeups/http-host-header-labs/image29.png)
+
+Set up payload.
+
+![Setup payload](/images/writeups/http-host-header-labs/image30.png)
+
+![Tiến hành brute force](/images/writeups/http-host-header-labs/image31.png)
+
+Đã tìm thấy ip hợp lệ. Thay ip đó vào request và gửi lại vơi endpoint `/admin`. Ta sẽ truy cập được trang admin và lấy được mã csrf.
+
+![Truy cập admin bằng IP nội bộ](/images/writeups/http-host-header-labs/image32.png)
+
+Thay mã này vào yêu cầu và gửi lại kèm theo yêu cầu xoá tài khoản carlos.
+
+![Xoá tài khoản carlos](/images/writeups/http-host-header-labs/image33.png)
+
+Truy cập thành công vào admin -> solve lab
+
+![Solve lab](/images/writeups/http-host-header-labs/image34.png)
+
+## Lab 5: SSRF via flawed request parsing
+
+Mục tiêu của bài lab này là đăng nhập vào admin và xoá người dùng carlos.
+
+![Lab SSRF via flawed request parsing](/images/writeups/http-host-header-labs/image35.png)
+
+Đầu tiên ta sẽ kiểm tra xem server có đang tin tưởng vào HTTP Host Header hay không bằng cách thay thế nó bằng máy chủ collaborator của ta và gửi lại request. Tuy nhiên, khai thác không thành công.
+
+![Khai thác Host header thất bại](/images/writeups/http-host-header-labs/image36.png)
+
+Tuy nhiên, khi ta thay URL tuyệt đối (Absolute URL) vào Get Request trên thì kết nối lại thành công.
+
+![Thành công với Absolute URL](/images/writeups/http-host-header-labs/image37.png)
+
+Điều này cho thấy Hệ thống ưu tiên URL tuyệt đối (Absolute URL) trong dòng yêu cầu (`GET http://...`) nhưng lại sử dụng tiêu đề Host để định tuyến yêu cầu ở tầng backend/phần mềm trung gian.
+
+Từ xung đột trên, ta sẽ brute force trường này trong dải ip 192.168.0.0/24 với trường Absolute URL để truy cập vào trang admin thông qua burp intruder.
+
+![Brute force với Absolute URL](/images/writeups/http-host-header-labs/image38.png)
+
+![Tìm thấy IP nội bộ](/images/writeups/http-host-header-labs/image39.png)
+
+Brute force thành công, tìm ra ip nội bộ là `/244`, tiếp đến ta thay ip này vào request `/admin`. Lấy được csrf token và thay vào GET Request kèm theo yêu cầu xoá tài khoản carlos để solve bài lab.
+
+## Lab 6: Host validation bypass via connection state attack
+
+Mục tiêu của bài lab là truy cập được vào `/admin` và xoá người dùng carlos.
+
+Trang web đang có các cơ chế phòng thủ nhất định, ta kiểm chứng điều này khi thay đổi trường HTTP Host Header và gửi lại.
+
+![Kiểm tra cơ chế phòng thủ](/images/writeups/http-host-header-labs/image40.png)
+
+Điều đó cho thấy nằm giữ font-end và back-end đang tồn tại các lớp bảo mật trung gian ( ví dụ WAF/Frontend Proxy (Nginx, HAProxy, Cloudflare ). Các proxy ở đây đang hoạt động theo cơ chế Connection Pooling, có nghĩa là đối với các request có cùng một kết nối, nếu request đầu tiên an toàn, thì các request sau đó sẽ mặc định được chấp nhận. Ta sẽ kiểm thử trường hợp này.
+
+TH 1: 2 request, 2 kết nối.
+
+Request 1.
+
+![Request 1 bình thường](/images/writeups/http-host-header-labs/image41.png)
+
+Request 2 ( xâm nhập vàp ip nội bộ ) bị từ chối.
+
+![Request 2 bị từ chối](/images/writeups/http-host-header-labs/image42.png)
+
+TH 2: 2 request, 1 kết nối. ( Dùng tính năng send group của burp )
+
+Request 1.
+
+![Request 1 trong group](/images/writeups/http-host-header-labs/image43.png)
+
+Request 2 ( xâm nhập vàp ip nội bộ ) đã thành công.
+
+![Request 2 thành công](/images/writeups/http-host-header-labs/image44.png)
+
+Như vậy ta đã vào được trang admin và lấy được csrf token để phục vụ cho hành động nhạy cảm là xoá tài khoản người dùng carlos.
+
+![Lấy CSRF token](/images/writeups/http-host-header-labs/image45.png)
+
+Gán nó vào request mới và gửi lại ( vẫn gưi theo group ), ta sẽ khai thác thành công.
+
+![Xoá tài khoản carlos thành công](/images/writeups/http-host-header-labs/image46.png)
+
+![Solve lab](/images/writeups/http-host-header-labs/image47.png)

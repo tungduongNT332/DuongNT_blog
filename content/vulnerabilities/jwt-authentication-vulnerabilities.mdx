@@ -1,0 +1,253 @@
+---
+title: "JWT"
+description: "Phân tích chi tiết về JSON Web Token (JWT) và các lỗ hổng xác thực liên quan — từ nguyên lý hoạt động, cấu trúc, đến các kỹ thuật bẻ khóa Signature, Header Parameter Injections, Algorithm Confusion và cách phòng ngừa."
+date: "2026-05-17"
+category: "vulnerability"
+tags: ["jwt", "authentication", "web-security", "jws", "algorithm-confusion"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+JSON Web Token (JWT) là một định dạng tiêu chuẩn dùng để gửi dữ liệu JSON được ký mật mã giữa các hệ thống. Mặc dù có thể chứa bất kỳ loại dữ liệu nào, JWT thường được sử dụng phổ biến nhất để truyền tải các Claim (thông tin về người dùng) trong các cơ chế xác thực, quản lý phiên làm việc và kiểm soát truy cập.
+
+Khác với các Session token truyền thống, toàn bộ dữ liệu mà Server cần đều được lưu trữ hoàn toàn ở phía Client, ngay bên trong chính JWT. Điều này khiến JWT trở thành lựa chọn lý tưởng cho các hệ thống phân tán, nơi người dùng cần tương tác mượt mà với nhiều Server back-end khác nhau.
+
+![JWT Overview](/images/vulnerabilities/jwt-authentication-vulnerabilities/image1.jpeg)
+
+Tuy nhiên, các lỗi thiết kế và việc xử lý JWT thiếu an toàn có thể khiến trang web phơi nhiễm trước hàng loạt cuộc tấn công nghiêm trọng. Nếu kẻ tấn công có thể tạo ra các Token hợp lệ chứa giá trị tùy ý, chúng có thể vượt qua rào cản xác thực, Privilege Escalation (leo thang đặc quyền) hoặc mạo danh người dùng khác để chiếm quyền kiểm soát toàn bộ tài khoản.
+
+Lưu ý: Tiêu chuẩn JWT có hai dạng là JWS và JWE. Tuy nhiên trong bảo mật thực chiến, thuật ngữ JWT chủ yếu dùng để chỉ JWS – nơi dữ liệu chỉ được mã hóa định dạng (encode) chứ không bị mã hóa nội dung (encrypt).
+
+![JWS vs JWE](/images/vulnerabilities/jwt-authentication-vulnerabilities/image2.jpeg)
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Để hiểu nguyên lý phát sinh lỗ hổng, chúng ta cần nắm rõ cấu trúc của một JWT và cách Server xác minh nó.
+
+Cấu trúc của JWT Một JWT bao gồm 3 phần: Header, Payload và Signature. Các phần này được mã hóa Base64url và ngăn cách với nhau bằng dấu chấm. Ví dụ:
+
+`eyJraWQiOiI5MTM2ZGRiMy1jYjBhLTRhMTktYTA3ZS1lYWRmNWE0NGM4YjUiLCJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJwb3J0c3dpZ2dlciIsImV4cCI6MTY0ODAzNzE2NCwibmFtZSI6IkNhcmxvcyBNb250b3lhIiwic3ViIjoiY2FybG9zIiwicm9sZSI6ImJsb2dfYXV0aG9yIiwiZW1haWwiOiJjYXJsb3NAY2FybG9zLW1vbnRveWEubmV0IiwiaWF0IjoxNTE2MjM5MDIyfQ.SYZBPIBg2CRjXAJ8vCER0LA_ENjII1JakvNQoP-Hw6GG1zfl4JyngsZReIfqRvIAEi5L4HV0q7_9qGhQZvy9ZdxEJbwTxRs_6Lb-fZTDpW6lKYNdMyjw45_alSCZ1fypsMWz_2mTpQzil0lOtps5Ei_z7mM7M8gCwe_AGpI53JxduQOaB5HkT5gVrv9cKu9CsW5MS6ZbqYXpGyOG5ehoxqm8DL5tFYaW3lB50ELxi0KsuTKEbD0t5BCl0aCR2MBJWAbN-xeLwEenaqBiwPVvKixYleeDQiBEIylFdNNIMviKRgXiYuAvMziVPbwSgkZVHeEdF5MQP1Oe2Spac-6IfA`
+
+Header: Chứa siêu dữ liệu về Token, đặc biệt là tham số alg chỉ định thuật toán ký.
+
+Payload: Chứa các Claim thực tế về người dùng. Bất kỳ ai có Token đều có thể dễ dàng giải mã và đọc được phần này:
+
+```json
+{
+"iss": "portswigger",
+"exp": 1648037164,
+"name": "Carlos Montoya",
+"sub": "carlos",
+"role": "blog_author",
+"email": "carlos@carlos-montoya.net",
+"iat": 1516239022
+}
+```
+
+Signature: Chữ ký mật mã do Server tạo ra bằng cách Hash (băm) Header và Payload cùng với một Secret key.
+
+Bản chất của lỗ hổng Server không lưu trữ bất kỳ thông tin nào về các JWT mà nó đã phát hành. Khi nhận lại Token, nó hoàn toàn không biết nội dung gốc là gì. Cơ chế an toàn duy nhất phụ thuộc vào việc tính toán lại Signature. Nếu thay đổi dù chỉ một byte ở Header hoặc Payload, Signature sẽ không khớp.
+
+Lỗ hổng xảy ra do hệ thống xử lý JWT yếu kém. Các tiêu chuẩn JWT được thiết kế rất linh hoạt, cho phép Developer tự quyết định nhiều chi tiết triển khai. Sự tự do này dẫn đến các sai lầm chết người: từ việc không thèm xác minh Signature, rò rỉ Secret key, cho đến việc để cho kẻ tấn công thao túng thuật toán hoặc thao túng chính chiếc khóa dùng để xác minh.
+
+## 3. Các biến thể và Phân loại
+
+Dựa trên cách thức khai thác cơ chế xác minh của Server, các cuộc tấn công JWT được chia thành 3 nhóm chính:
+
+Nhóm 1: Lỗ hổng xác minh Signature cơ bản
+- Sử dụng sai hàm thư viện (chỉ giải mã thay vì xác minh).
+- Chấp nhận các Token không có Signature (thuật toán none).
+- Secret key yếu, dễ bị Brute-force.
+
+Nhóm 2: Header Parameter Injections
+- Tiêm khóa tự ký qua tham số jwk.
+- Tiêm bộ khóa ngoại vi qua tham số jku.
+- Tấn công Path Traversal hoặc SQL Injection qua tham số kid.
+- Khai thác các tham số cty và x5c.
+
+Nhóm 3: Algorithm Confusion
+- Đánh lừa Server sử dụng Public key của thuật toán Asymmetric (RS256) như một Secret key của thuật toán Symmetric (HS256).
+
+## 4. Hướng dẫn khai thác thực tế
+
+Dưới đây là các kỹ thuật thực chiến để bẻ khóa cơ chế bảo mật của JWT. Giả sử ta có một Payload chứa dữ liệu cần thao túng như sau:
+
+```json
+{
+"username": "carlos",
+"isAdmin": false
+}
+```
+
+### 4.1. Khai thác lỗi xác minh Signature cơ bản
+
+Chấp nhận Signature tùy ý: Các thư viện JWT thường cung cấp hai hàm độc lập: một để xác minh và một để giải mã. Ví dụ, thư viện jsonwebtoken trong Node.js cung cấp hàm verify() và decode(). Nếu Developer nhầm lẫn và chỉ truyền Token vào hàm decode(), ứng dụng sẽ bỏ qua hoàn toàn bước kiểm tra Signature. Kẻ tấn công chỉ cần sửa Payload thành "isAdmin": true và gửi lại.
+
+Chấp nhận Token không có Signature: Kẻ tấn công can thiệp vào Header, đổi tham số alg thành none (chỉ định một JWT không bảo mật).
+
+```json
+{
+"alg": "none",
+"typ": "JWT"
+}
+```
+
+Thông thường Server sẽ từ chối thuật toán này, nhưng kẻ tấn công có thể lách qua bộ lọc bằng kỹ thuật Obfuscation (viết hoa xen kẽ ví dụ: nOnE) hoặc sử dụng các Unexpected encodings. Lưu ý: Dù không có Signature, phần Payload vẫn phải kết thúc bằng một dấu chấm.
+
+Brute-force Secret key: Thuật toán Symmetric như HS256 sử dụng một chuỗi văn bản làm Secret key. Nếu Developer quên thay đổi khóa mặc định, sao chép code mẫu trên mạng hoặc dùng khóa yếu, kẻ tấn công có thể dùng Hashcat để bẻ khóa ngoại tuyến cực kỳ nhanh chóng.
+
+(Lưu ý về môi trường: Hashcat đã được cài đặt sẵn và sẵn sàng sử dụng trên hệ điều hành Kali Linux. Tuy nhiên, nếu bạn đang dùng bản máy ảo VirtualBox của Kali thay vì cài trực tiếp trên ổ cứng, hệ thống có thể sẽ không được cấp đủ RAM để chạy công cụ này).
+
+Lệnh Hashcat (với `<jwt>` là Token hợp lệ và `<wordlist>` là từ điển):
+`hashcat -a 0 -m 16500 <jwt> <wordlist>`
+
+Vì quá trình bẻ khóa diễn ra hoàn toàn cục bộ trên máy của kẻ tấn công mà không cần gửi bất kỳ yêu cầu nào đến Server, thao tác này cực kỳ nhanh. Nếu Server sử dụng một khóa cực kỳ yếu, kẻ tấn công thậm chí có thể Brute-force từng ký tự một thay vì dùng Wordlist.
+
+(Mẹo: Nếu bạn chạy lệnh này nhiều lần, hãy nhớ thêm cờ --show để Hashcat hiển thị kết quả. Nếu thành công, Hashcat sẽ xuất ra kết quả định dạng `<jwt>:<identified-secret>`). Có được khóa, kẻ tấn công tự do tạo và ký lại bất kỳ JWT nào.
+
+### 4.2. Header Parameter Injections
+
+JOSE Header chứa nhiều tham số hướng dẫn Server cách tìm khóa xác minh. Nếu không được kiểm soát, kẻ tấn công có thể ép Server dùng khóa của chính chúng.
+
+Tiêm qua tham số jwk: Tham số này cho phép nhúng trực tiếp Public key vào Token theo chuẩn JWK. Nếu Server cấu hình sai và tin tưởng mọi khóa được nhúng, kẻ tấn công có thể tự ký Token bằng khóa của mình. Trong Burp Suite, sử dụng extension JWT Editor để tự động hóa:
+
+- Mở tab JWT Editor Keys, tạo một khóa RSA mới.
+- Tại màn hình chặn gói tin, chọn tab JSON Web Token do extension tạo ra.
+- Sửa Payload theo ý muốn.
+- Bấm nút Attack, chọn Embedded JWK và chọn khóa RSA vừa tạo. Extension sẽ tự động cập nhật tham số jwk và kid tương ứng.
+
+Ví dụ Header bị tiêm:
+
+```json
+{
+"kid": "ed2Nf8sb-sD6ng0-scs5390g-fFD8sfxG",
+"typ": "JWT",
+"alg": "RS256",
+"jwk": {
+"kty": "RSA",
+"e": "AQAB",
+"kid": "ed2Nf8sb-sD6ng0-scs5390g-fFD8sfxG",
+"n": "yy1wpYmffgXBxhAUJzHHocCuJolwDqql75ZWuCQ_cb33K2vh9m"
+}
+}
+```
+
+Tiêm qua tham số jku: Thay vì nhúng trực tiếp, tham số jku chứa một đường dẫn trỏ đến một JWK Set trên mạng (thường công khai tại /.well-known/jwks.json). Ví dụ một cấu trúc JWK Set đầy đủ:
+
+```json
+{
+"keys": [
+{
+"kty": "RSA",
+"e": "AQAB",
+"kid": "75d0ef47-af89-47a9-9061-7c02a610d5ab",
+"n": "o-yy1wpYmffgXBxhAUJzHHocCuJolwDqql75ZWuCQ_cb33K2vh9mk6GPM9gNN4Y_qTVX67WhsN3JvaFYw-fhvsWQ"
+},
+{
+"kty": "RSA",
+"e": "AQAB",
+"kid": "d8fDFo-fS9-faS14a9-ASf99sa-7c1Ad5abA",
+"n": "fc3f-yy1wpYmffgXBxhAUJzHql79gNNQ_cb33HocCuJolwDqmk6GPM4Y_qTVX67WhsN3JvaFYw-dfg6DH-asAScw"
+}
+]
+}
+```
+
+Kẻ tấn công lưu trữ JWK Set này trên máy chủ của mình và đặt URL vào jku. Để lách qua bộ lọc tên miền tin cậy của Server mục tiêu, ta có thể kết hợp các kỹ thuật SSRF.
+
+Tiêm qua tham số kid: Tham số kid là một chuỗi văn bản do Developer tùy ý đặt để xác định khóa. Nếu Server dùng chuỗi này để trỏ đến một Local file, nó có thể dính lỗ hổng Path Traversal:
+
+```json
+{
+"kid": "../../path/to/file",
+"typ": "JWT",
+"alg": "HS256",
+"k": "asGsADas..."
+}
+```
+
+Kẻ tấn công có thể trỏ kid đến tệp /dev/null (một tệp rỗng trên Linux). Vì đọc tệp này trả về chuỗi rỗng, kẻ tấn công chỉ cần ký Token bằng một Secret key rỗng là hệ thống sẽ chấp nhận. Ngoài ra, nếu khóa lưu trong cơ sở dữ liệu, kid cũng là điểm xâm nhập lý tưởng cho SQL Injection.
+
+Các tham số khác:
+
+- cty: Có thể đổi sang text/xml hoặc application/x-java-serialized-object để mở ra các hướng tấn công XXE hoặc Deserialization.
+- x5c: Dùng để tiêm chứng chỉ X.509 tự ký tương tự như kỹ thuật jwk. Độ phức tạp của định dạng X.509 thường gây ra các lỗ hổng khi phân tích cú pháp (Tham khảo CVE-2017-2800 và CVE-2018-2633).
+
+### 4.3. Tấn công Algorithm Confusion
+
+JWT có thể được ký bằng nhiều thuật toán khác nhau. HS256 sử dụng khóa Symmetric (chỉ có 1 khóa duy nhất để ký và xác minh, giống như mật khẩu).
+
+![Symmetric HS256](/images/vulnerabilities/jwt-authentication-vulnerabilities/image3.jpeg)
+
+Trong khi đó, RS256 sử dụng bộ khóa Asymmetric (dùng Private key để ký và Public key để xác minh).
+
+![Asymmetric RS256](/images/vulnerabilities/jwt-authentication-vulnerabilities/image4.jpeg)
+
+Server dùng thuật toán Asymmetric sẽ cung cấp Public key cho mọi người kiểm tra Signature. Tuy nhiên, nhiều thư viện JWT cung cấp một hàm xác minh chung cho mọi thuật toán. Mã giả của thư viện thường trông như sau:
+
+```javascript
+function verify(token, secretOrPublicKey){
+algorithm = token.getAlgHeader();
+if(algorithm == "RS256"){
+// Dùng khóa được cấp như một RSA public key
+} else if (algorithm == "HS256"){
+// Dùng khóa được cấp như một HMAC secret key
+}
+}
+```
+
+Lỗ hổng xảy ra khi Developer mặc định truyền cứng (hardcode) Public key vào hàm này vì đinh ninh rằng hệ thống chỉ dùng RS256.
+
+Kẻ tấn công thực hiện quy trình sau để đánh lừa Server:
+
+- Lấy Public key của Server (thường phơi bày ở /.well-known/jwks.json).
+- Chuyển đổi Public key sang định dạng chính xác mà Server lưu trữ nội bộ (thường là X.509 PEM). Phải bảo đảm khớp từng byte, kể cả các ký tự ẩn. Trong Burp Suite (với extension JWT Editor):
+- Copy JWK -> Tạo New RSA Key dạng PEM -> Mã hóa Base64 chuỗi PEM đó.
+- Tạo New Symmetric Key -> Xóa tham số k mặc định, dán chuỗi Base64 vừa tạo vào.
+- Sửa tham số alg trong Header thành HS256.
+- Ký Token bằng thuật toán HS256, sử dụng Symmetric Key vừa tạo. Hệ thống sẽ lấy Public key của nó đối chiếu với thuật toán HS256 (lúc này Public key bị hiểu lầm thành Secret key của HMAC) và xác minh thành công.
+
+Nếu không tìm thấy Public key công khai, kẻ tấn công có thể trích xuất nó từ 2 JWT hợp lệ có sẵn bằng lệnh Docker sau:
+
+`docker run --rm -it portswigger/sig2n <token1> <token2>`
+
+(Lưu ý về cấu hình: Bạn bắt buộc phải cài đặt Docker CLI để chạy lệnh này. Nếu đây là lần chạy đầu tiên, hệ thống sẽ mất vài phút để tự động tải (pull) image từ Docker Hub về). Công cụ Docker này thực chất là một bản bọc rút gọn của tập lệnh jwt_forgery.py nổi tiếng, được cung cấp trên kho lưu trữ GitHub rsa_sign2n. Công cụ này sẽ tính toán và xuất ra khóa PEM được mã hóa Base64 ở cả định dạng X.509 và PKCS1, kèm theo các JWT giả mạo được ký sẵn. Ta chỉ cần dùng Burp Repeater gửi thử từng Token để xác định đúng khóa và tiến hành tấn công.
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+Để rà soát bảo mật toàn diện cơ chế JWT, Pentester cần thực hiện các bước sau:
+
+- Kiểm tra tính bắt buộc của Signature: Thử sửa đổi Payload mà không cập nhật Signature xem Server có chấp nhận không.
+- Kiểm thử thuật toán none: Đổi tham số alg thành none, xóa nội dung Signature (giữ lại dấu chấm cuối) và thử các biến thể Obfuscation (nOnE) hoặc Unexpected encodings.
+- Thử nghiệm Brute-force: Lưu lại Token hợp lệ và chạy Hashcat với Wordlist mật khẩu phổ biến để kiểm tra độ mạnh của khóa Symmetric.
+- Kiểm thử Header Parameter Injections:
+  - Thử nhúng thẻ jwk tự tạo qua Burp JWT Editor.
+  - Chèn URL máy chủ kiểm soát vào jku và quan sát lưu lượng mạng.
+  - Thử nghiệm Path Traversal (../../dev/null) và chèn payload SQL Injection vào tham số kid.
+- Kiểm thử Algorithm Confusion: Thu thập Public key từ các điểm cuối phổ biến (như jwks.json), chuyển đổi định dạng và thử ký Token bằng thuật toán HS256 sử dụng Public key vừa tìm được.
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Để bảo vệ ứng dụng trước các cuộc tấn công JWT, cần áp dụng các biện pháp phòng vệ sau:
+
+- Quản lý thư viện: Sử dụng các thư viện xử lý JWT cập nhật nhất. Mặc dù các thư viện hiện đại đã hạn chế nhiều lỗi vô ý, nhưng sự linh hoạt của tiêu chuẩn JWT vẫn đòi hỏi Developer phải hiểu rõ công nghệ này.
+- Xác minh Signature chặt chẽ: Đảm bảo mọi JWT nhận được đều trải qua quá trình xác minh Signature nghiêm ngặt, xử lý triệt để các trường hợp ngoại lệ như Token sử dụng thuật toán không mong muốn.
+- Kiểm soát Whitelist: Thiết lập một Whitelist nghiêm ngặt chứa các tên miền Server hợp lệ dành cho tham số jku.
+- Sanitize dữ liệu đầu vào: Xác thực và làm sạch dữ liệu để ngăn chặn rủi ro Path Traversal và SQL Injection thông qua tham số kid.
+
+Best Practices:
+- Luôn thiết lập Expiration date (exp) cho mọi Token được phát hành.
+- Tránh gửi Token qua các tham số URL để ngăn ngừa rò rỉ.
+- Bổ sung claim aud (audience) để chỉ định rõ ứng dụng nhận Token, ngăn chặn việc tái sử dụng Token trên các trang web khác.
+- Xây dựng cơ chế cho phép Server chủ động thu hồi Token (ví dụ như khi người dùng đăng xuất).
+
+## Tham khảo
+
+- [PortSwigger — JWT Vulnerabilities](https://portswigger.net/web-security/jwt)
+- [HackTricks — JWT Vulnerabilities](https://book.hacktricks.xyz/pentesting-web/hacking-with-jwt)
