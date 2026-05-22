@@ -1,0 +1,166 @@
+---
+title: "Business Logic Vulnerabilities"
+description: "Phân tích chi tiết về lỗ hổng Business Logic — từ nguyên lý hoạt động, các giả định thiết kế sai lầm, các kịch bản khai thác thực tế (Client-side bypass, Unconventional input, Sequence breaking, Encryption oracle) và cách phòng ngừa."
+date: "2026-05-20"
+category: "vulnerability"
+tags: ["business-logic", "web-security", "design-flaws", "bypass", "ssrf"]
+thumbnail: ""
+external_link: ""
+---
+
+## 1. Tổng quan nhanh
+
+Business Logic Vulnerabilities là những khiếm khuyết trong thiết kế và triển khai của một ứng dụng, cho phép kẻ tấn công kích hoạt các hành vi ngoài ý muốn. Điều này giúp chúng thao túng các chức năng hợp pháp để đạt được mục đích xấu. Những khiếm khuyết này thường là hậu quả của việc không lường trước được các trạng thái bất thường của ứng dụng và do đó, không có cơ chế xử lý an toàn.
+
+Thuật ngữ Business Logic dùng để chỉ tập hợp các quy tắc định nghĩa cách ứng dụng hoạt động. Một trong những mục đích chính của Business Logic là thực thi các quy tắc và rào cản đã được định nghĩa khi thiết kế ứng dụng. Điều này bao gồm việc ngăn người dùng thực hiện các hành động gây hại cho doanh nghiệp hoặc những hành động hoàn toàn vô lý. Các lỗ hổng trong logic có thể cho phép kẻ tấn công lách qua các quy tắc này. Ví dụ, chúng có thể hoàn tất một giao dịch mà không cần đi qua luồng mua hàng dự kiến. Trong các trường hợp khác, việc thiếu hụt hoặc xác thực dữ liệu yếu kém có thể cho phép người dùng thay đổi tùy ý các giá trị quan trọng của giao dịch hoặc gửi các Input vô lý.
+
+Những lỗ hổng này thường vô hình đối với những người không chủ đích tìm kiếm chúng, vì chúng không bị lộ ra trong quá trình sử dụng tiêu chuẩn của ứng dụng. Tuy nhiên, kẻ tấn công có thể khai thác các lỗ hổng này bằng cách tương tác với ứng dụng theo những cách mà Developer không bao giờ ngờ tới.
+
+Lỗ hổng logic cực kỳ đa dạng và mang tính đặc thù riêng cho từng ứng dụng. Việc xác định chúng thường đòi hỏi một lượng kiến thức nhất định của con người, chẳng hạn như sự hiểu biết về Domain nghiệp vụ hoặc những mục tiêu mà kẻ tấn công có thể hướng tới trong một ngữ cảnh nhất định. Điều này làm cho chúng rất khó bị phát hiện bởi các công cụ quét tự động. Chính vì thế, đây luôn là mục tiêu tuyệt vời cho các chuyên gia Bug Bounty và Pentester thao tác thủ công.
+
+Mức độ tác động của chúng rất đa dạng. Về cơ bản, tác động của bất kỳ lỗi logic nào phụ thuộc vào chức năng mà nó liên quan. Nếu lỗi nằm trong cơ chế xác thực, điều này có thể ảnh hưởng nghiêm trọng đến bảo mật tổng thể. Kẻ tấn công có thể khai thác để leo thang đặc quyền, hoặc Bypass hoàn toàn xác thực, giành quyền truy cập vào dữ liệu và chức năng nhạy cảm. Điều này cũng mở rộng bề mặt tấn công cho các kỹ thuật khai thác khác. Các lỗi logic trong giao dịch tài chính hiển nhiên có thể dẫn đến tổn thất khổng lồ cho doanh nghiệp thông qua việc đánh cắp tiền hay lừa đảo.
+
+Một nguyên tắc bảo mật quan trọng: Bất kỳ hành vi kỳ lạ nào của logic hệ thống cũng nên được khắc phục ngay cả khi bạn chưa thể tìm ra cách khai thác nó, vì luôn có rủi ro một ai đó khác sẽ làm được. Kể cả khi lỗ hổng không mang lại lợi ích trực tiếp cho kẻ tấn công, nó vẫn có thể bị lợi dụng để phá hoại doanh nghiệp theo một cách nào đó.
+
+![Business Logic](/images/vulnerabilities/business-logic-vulnerabilities/image1.jpeg)
+
+<Alert type="warning">
+**Cảnh báo Đạo đức:** Các thông tin và kỹ thuật trong bài viết này chỉ nhằm mục đích cung cấp kiến thức bảo mật, phục vụ cho việc nghiên cứu và kiểm thử trên các hệ thống đã được cấp phép. Tuyệt đối không sử dụng cho các mục đích vi phạm pháp luật.
+</Alert>
+
+## 2. Lỗ hổng hoạt động như thế nào?
+
+Lỗ hổng Business Logic thường phát sinh do đội ngũ thiết kế và phát triển đưa ra những giả định sai lầm về cách người dùng sẽ tương tác với ứng dụng.
+
+Những giả định tồi này dẫn đến việc xác thực Input của người dùng không đầy đủ. Ví dụ, nếu Developer mặc định người dùng chỉ truyền dữ liệu duy nhất qua trình duyệt web, ứng dụng có thể phụ thuộc hoàn toàn vào các Client-side controls yếu ớt để xác thực Input. Kẻ tấn công có thể dễ dàng vượt qua các hàng rào này bằng công cụ Proxy. Hệ quả là khi kẻ tấn công đi chệch khỏi hành vi được mong đợi, ứng dụng sẽ không có các bước xử lý phù hợp và rơi vào trạng thái mất an toàn.
+
+Lỗ hổng logic đặc biệt phổ biến trong các hệ thống quá phức tạp mà ngay cả chính đội ngũ phát triển cũng không hiểu hết tường tận ứng dụng với tư cách là một tổng thể. Trong các dự án có Code base lớn, một lập trình viên làm việc ở thành phần này có thể đưa ra giả định sai lầm về cách hoạt động của một thành phần khác. Nếu họ không lập tài liệu rõ ràng về những giả định ngầm này, các lỗ hổng logic nghiêm trọng sẽ rất dễ dàng len lỏi vào ứng dụng khi các chức năng kết hợp với nhau theo cách không ai ngờ tới.
+
+## 3. Các biến thể và Phân loại
+
+Lỗ hổng Business Logic có thể được phân nhóm dựa trên những sai lầm ban đầu đã tạo ra chúng. Dưới đây là các kịch bản điển hình:
+
+- **Quá tin tưởng vào Client-side controls:** Giả định sai lầm rằng người dùng chỉ tương tác qua giao diện web và các cơ chế kiểm tra trên trình duyệt là đủ an toàn.
+- **Không xử lý Unconventional input:** Ứng dụng không lường trước các giá trị đầu vào vượt ngoài giới hạn logic nghiệp vụ.
+- **Các giả định sai lầm về hành vi người dùng:**
+  - Tin rằng người dùng đã được cấp quyền sẽ luôn đáng tin cậy mãi mãi.
+  - Tin rằng người dùng sẽ luôn cung cấp đầy đủ dữ liệu cho các trường Input bắt buộc.
+  - Tin rằng người dùng sẽ luôn tuân thủ tuần tự các bước trong một luồng Sequence.
+- **Lỗ hổng Domain-specific:** Các lỗ hổng chỉ xuất hiện dựa trên quy tắc kinh doanh cụ thể của trang web.
+- **Cung cấp Encryption oracle:** Ứng dụng mã hóa Input của người dùng và trả về Ciphertext, vô tình tạo ra một công cụ mã hóa dữ liệu tùy ý cho kẻ tấn công.
+- **Email address parser discrepancies:** Sự khác biệt trong cách các thành phần khác nhau của ứng dụng phân tích cú pháp địa chỉ email.
+
+## 4. Hướng dẫn khai thác thực tế
+
+Dưới đây là các kỹ thuật thực chiến để bẻ khóa logic của hệ thống.
+
+### 4.1. Vượt qua Client-side controls
+
+Kẻ tấn công không sử dụng trình duyệt thông thường mà dùng các công cụ như Burp Proxy để chặn và can thiệp dữ liệu sau khi nó rời khỏi trình duyệt nhưng trước khi đi vào logic xử lý Server-side. Việc Server tin tưởng chấp nhận dữ liệu ở bề nổi mà không thực hiện kiểm tra tính toàn vẹn và xác thực Server-side chặt chẽ sẽ cho phép Hacker dễ dàng gây ra những thiệt hại nặng nề với nỗ lực tối thiểu.
+
+### 4.2. Khai thác Unconventional input
+
+Mục đích của logic ứng dụng là giới hạn dữ liệu nhập vào ở mức tuân thủ các quy tắc nghiệp vụ. Nhiều ứng dụng kết hợp các giới hạn số học vào logic của chúng, chẳng hạn như giới hạn để quản lý hàng tồn kho, áp dụng các hạn chế về ngân sách, hoặc kích hoạt các giai đoạn của chuỗi cung ứng.
+
+Để triển khai các quy tắc như vậy, Developer cần lường trước mọi kịch bản có thể xảy ra và kết hợp các cách xử lý chúng vào logic của ứng dụng. Nói cách khác, họ cần cho ứng dụng biết liệu nó có nên cho phép một Input nhất định hay không và phản ứng thế nào dựa trên các điều kiện khác nhau. Nếu không có logic rõ ràng để xử lý một trường hợp nhất định, điều này có thể dẫn đến các hành vi bất ngờ và có thể bị khai thác.
+
+Ví dụ đơn giản tại một cửa hàng trực tuyến: Khi đặt hàng, người dùng chỉ định số lượng muốn mua. Mặc dù về mặt lý thuyết, bất kỳ số nguyên nào cũng là một Input hợp lệ, nhưng logic nghiệp vụ phải ngăn người dùng đặt mua số lượng vượt quá số hàng hiện đang có trong kho.
+
+Một kiểu dữ liệu số có thể chấp nhận giá trị âm. Tùy thuộc vào chức năng liên quan, việc Business Logic cho phép điều này có thể là hoàn toàn vô lý. Tuy nhiên, nếu ứng dụng không thực hiện xác thực Server-side đầy đủ và từ chối Input này, kẻ tấn công có thể truyền vào một giá trị âm và gây ra hành vi không mong muốn.
+
+Hãy xem xét một tính năng chuyển tiền giữa hai tài khoản ngân hàng. Code xử lý Server-side thường kiểm tra số dư như sau:
+
+```php
+$transferAmount = $_POST['amount'];
+$currentBalance = $user->getBalance();
+
+if ($transferAmount <= $currentBalance) {
+    // Hoàn tất chuyển tiền
+} else {
+    // Chặn giao dịch: không đủ số dư
+}
+```
+
+Nếu logic không chặn người dùng nhập số âm vào Parameter `amount`, lỗ hổng này có thể bị lợi dụng để vừa lách qua khâu kiểm tra số dư, vừa chuyển tiền theo hướng sai. Nếu kẻ tấn công chuyển -1000 đô la vào tài khoản nạn nhân, hệ thống sẽ đánh giá -1000 nhỏ hơn số dư hiện tại và chấp thuận. Kết quả là kẻ tấn công lại nhận được 1000 đô la từ nạn nhân.
+
+Khi kiểm thử, bạn nên thử nghiệm các Input ở những phạm vi mà người dùng hợp pháp không bao giờ nhập tới như các giá trị số cực cao hoặc cực thấp, chuỗi siêu dài cho các trường văn bản, và thậm chí là các kiểu dữ liệu không mong muốn. Mẹo săn Bug: Nếu bạn phát hiện một biểu mẫu trên trang web không xử lý an sau Input bất thường, rất có khả năng các biểu mẫu khác trên cùng hệ thống cũng sẽ mắc những vấn đề tương tự.
+
+### 4.3. Người dùng hợp lệ không đáng tin cậy mãi mãi
+
+Một trong những nguyên nhân gốc rễ phổ biến nhất của lỗ hổng logic là việc đưa ra các giả định sai lầm về hành vi của người dùng. Các ứng dụng có vẻ an toàn vì chúng triển khai các biện pháp tưởng chừng như mạnh mẽ để thực thi các quy tắc kinh doanh. Tuy nhiên, một số ứng dụng mắc sai lầm khi cho rằng một khi người dùng đã vượt qua được các lớp kiểm soát bảo mật khắt khe ban đầu như quy trình đăng nhập hay xác thực danh tính, thì người dùng đó và dữ liệu của họ có thể được tin tưởng vô thời hạn. Điều này dẫn đến việc thực thi lỏng lẻo các biện pháp kiểm soát tương tự từ thời điểm đó trở đi. Sự không nhất quán trong việc áp dụng các quy tắc kinh doanh và bảo mật này tạo ra những lỗ hổng nguy hiểm.
+
+### 4.4. Bỏ qua các Parameter bắt buộc
+
+Một quan niệm sai lầm là người dùng sẽ luôn cung cấp giá trị cho các trường Input bắt buộc. Trình duyệt có thể ngăn người dùng bình thường gửi biểu mẫu thiếu thông tin, nhưng kẻ tấn công có thể can thiệp dữ liệu khi đang truyền tải, bao gồm cả việc xóa hoàn toàn các Parameter.
+
+Điều này đặc biệt nguy hiểm trong các trường hợp nhiều chức năng được triển khai trong cùng một Server-side script. Khi đó, sự hiện diện hoặc vắng mặt của một Parameter sẽ quyết định khối code nào được thực thi. Việc xóa Parameter có thể cho phép Hacker truy cập vào các Code paths vốn dĩ bị chặn. Để săn lùng lỗi này, bạn cần tuân thủ các nguyên tắc:
+
+- Chỉ xóa từng Parameter một để đảm bảo quét qua mọi ngã rẽ của code.
+- Thử xóa tên của Parameter cũng như giá trị của nó. Server thường xử lý hai tình huống này theo cách khác biệt.
+- Theo dõi đến cùng các quy trình nhiều bước. Đôi khi việc can thiệp Parameter ở một bước sẽ tạo ra tác động ở một bước khác sâu hơn trong quy trình.
+- Áp dụng kỹ thuật này cho cả URL Parameter, POST Parameter và kiểm tra cả Cookie.
+
+### 4.5. Phá vỡ luồng Sequence
+
+Nhiều giao dịch dựa trên các quy trình làm việc được xác định trước, bao gồm một Sequence các bước. Giao diện web sẽ hướng dẫn người dùng qua quy trình này, nhưng kẻ tấn công không nhất thiết phải tuân thủ trình tự dự kiến đó. Việc không tính đến khả năng này có thể dẫn đến những lỗ hổng nguy hiểm nhưng lại tương đối đơn giản để khai thác.
+
+Ví dụ: Nhiều trang web triển khai 2FA yêu cầu người dùng đăng nhập ở một trang trước khi nhập mã xác minh ở một trang riêng biệt. Nếu Server mặc định người dùng sẽ luôn hoàn thành quy trình này và không xác minh lại, kẻ tấn công có thể Bypass bước 2FA hoàn toàn bằng cách điều hướng thẳng đến trang sau khi đăng nhập.
+
+Việc đưa ra các giả định về trình tự sự kiện có thể dẫn đến hàng loạt vấn đề ngay cả trong cùng một luồng hoặc chức năng. Bằng cách sử dụng các công cụ như Burp Proxy và Repeater, một khi kẻ tấn công đã nhìn thấy một Request, chúng có thể gửi lại nó tùy ý và sử dụng Forced browsing để thực hiện bất kỳ tương tác nào với Server theo bất kỳ thứ tự nào chúng muốn. Điều này cho phép chúng hoàn thành các hành động khác nhau trong khi ứng dụng đang ở trạng thái không mong muốn.
+
+Cần lưu ý: Đôi khi bạn có thể truy cập các bước khác nhau bằng cách gửi các bộ Parameter khác nhau đến cùng một URL. Việc đẩy ứng dụng vào một trạng thái chưa được khởi tạo thường sẽ gây ra các ngoại lệ do biến bị null. Hãy chú ý kỹ các thông báo lỗi hoặc thông tin gỡ lỗi, vì chúng là nguồn tiết lộ thông tin cực kỳ giá trị giúp bạn tinh chỉnh cuộc tấn công và hiểu rõ hành vi Back-end.
+
+### 4.6. Khai thác lỗ hổng Domain-specific
+
+Trong nhiều trường hợp, bạn sẽ bắt gặp các lỗ hổng logic mang tính đặc thù cho Domain nghiệp vụ hoặc mục đích của trang web. Tính năng giảm giá của các cửa hàng trực tuyến là một bề mặt tấn công kinh điển.
+
+Ví dụ: Một cửa hàng trực tuyến giảm giá 10% cho đơn hàng trên 1000 đô la. Nếu Business Logic không kiểm tra lại xem đơn hàng có bị thay đổi sau khi áp dụng giảm giá hay không, kẻ tấn công có thể lạm dụng nó. Chúng sẽ thêm sản phẩm vào giỏ hàng cho đến khi chạm mốc 1000 đô la, loại bỏ các món đồ không muốn mua trước khi đặt hàng, và vẫn nhận được mã giảm giá 10% dù đơn hàng không còn đáp ứng tiêu chí ban đầu.
+
+Bạn nên đặc biệt chú ý đến bất kỳ tình huống nào mà giá cả hoặc các giá trị nhạy cảm khác được điều chỉnh dựa trên các tiêu chí do hành động của người dùng quyết định. Hãy cố gắng tìm hiểu xem ứng dụng sử dụng thuật toán nào để thực hiện các điều chỉnh này và thời điểm nào các điều chỉnh đó được áp dụng.
+
+Bạn cần suy nghĩ kỹ về mục tiêu mà kẻ tấn công hướng tới và cố gắng tìm các cách khác nhau để đạt được điều đó. Điều này đòi hỏi kiến thức về Domain. Ví dụ, bạn phải hiểu mạng xã hội thì mới hiểu được lợi ích của việc ép một lượng lớn người dùng Follow mình. Nếu không có kiến thức này, bạn sẽ dễ dàng bỏ qua các hành vi nguy hiểm vì không lường được tác động dây chuyền, và gặp khó khăn trong việc xâu chuỗi các chức năng lại với nhau để tạo thành một đòn tấn công có hại.
+
+Để đơn giản hóa, các ví dụ được sử dụng trong chủ đề này chỉ cụ thể cho một Domain mà tất cả người dùng đều đã quen thuộc, đó là cửa hàng trực tuyến. Tuy nhiên, cho dù bạn đang săn Bug Bounty, Pentest hay thậm chí chỉ là một Developer cố gắng viết code an toàn hơn, đôi khi bạn có thể gặp phải các ứng dụng từ những Domain ít quen thuộc hơn. Trong trường hợp này, bạn nên đọc càng nhiều tài liệu càng tốt và trò chuyện với các chuyên gia trong lĩnh vực đó để có thêm góc nhìn. Domain càng kỳ lạ và ít người biết, khả năng các Tester khác lười tìm hiểu và bỏ sót vô số Bug lại càng cao.
+
+### 4.7. Lợi dụng Encryption oracle
+
+Các kịch bản nguy hiểm có thể xảy ra khi Input do người dùng kiểm soát được hệ thống mã hóa và trả về Ciphertext hiển thị cho người dùng. Tình huống này được gọi là Encryption oracle. Kẻ tấn công có thể sử dụng Input này để mã hóa dữ liệu tùy ý.
+
+Điều này trở nên nguy hiểm khi có các Input khác trong ứng dụng mong đợi dữ liệu được mã hóa bằng cùng thuật toán đó. Kẻ tấn công có thể sử dụng Oracle để tạo ra Input được mã hóa hợp lệ, sau đó truyền nó vào các chức năng nhạy cảm khác. Nếu ứng dụng có thêm tính năng giải mã ngược lại, kẻ tấn công càng dễ dàng giải mã các dữ liệu khác để xác định cấu trúc mong đợi. Tuy nhiên, điều này chỉ giúp tiết kiệm công sức tạo ra dữ liệu độc hại, chứ không nhất thiết là điều kiện bắt buộc để có thể khai thác thành công. Mức độ nghiêm trọng của một Encryption oracle phụ thuộc hoàn toàn vào việc có những chức năng nào khác cũng sử dụng chung thuật toán với nó.
+
+### 4.8. Khai thác Email address parser discrepancies
+
+Một số trang web phân tích cú pháp địa chỉ email để trích xuất Domain và xác định tổ chức của người dùng. Quá trình này rất phức tạp, ngay cả với các địa chỉ hợp lệ chuẩn RFC. Sự khác biệt trong cách các thành phần của ứng dụng phân tích cú pháp email có thể phá vỡ logic này.
+
+Kẻ tấn công có thể khai thác sự khác biệt này bằng các kỹ thuật Encoding tinh vi để ngụy trang các phần của địa chỉ email. Điều này cho phép chúng tạo ra các email vượt qua bài kiểm tra xác thực ban đầu nhưng lại được logic phân tích cú pháp của Server diễn giải theo một cách khác. Tác động chính là khả năng truy cập trái phép. Kẻ tấn công có thể đăng ký tài khoản bằng các email dường như hợp lệ từ các Domain bị hạn chế, qua đó giành quyền truy cập vào các khu vực nhạy cảm như Admin panels. Bạn có thể nghiên cứu thêm Báo cáo Splitting the Email Atom của Gareth Heyes thuộc PortSwigger Research.
+
+## 5. Checklist Kiểm thử và Nhận diện
+
+Để săn tìm các lỗi Business Logic, bạn cần kết hợp tư duy logic, sự hiểu biết về nghiệp vụ và các kỹ thuật can thiệp thủ công:
+
+- **Kiểm tra Unconventional input:** Dùng Burp Repeater gửi các Input nằm ngoài dự tính. Quan sát Response và trả lời 3 câu hỏi:
+  - Có bất kỳ giới hạn nào được áp đặt lên dữ liệu không?
+  - Chuyện gì xảy ra khi bạn chạm tới những giới hạn đó?
+  - Dữ liệu của bạn có đang bị biến đổi hay chuẩn hóa không?
+- **Kỹ thuật xóa Parameter:** Xóa tuần tự từng Parameter. Thử xóa giá trị lẫn xóa tên. Đảm bảo theo dõi hết toàn bộ quy trình đa bước và rà soát cả các giá trị Cookie.
+- **Kỹ thuật phá vỡ Sequence:** Dùng Forced browsing để ép ứng dụng nhảy cóc bước, lặp lại bước hoặc gửi sai bộ Parameter quy định trên cùng một URL. Chú ý các thông báo lỗi khi ứng dụng rơi vào trạng thái lỗi State machine flaws.
+- **Nghiên cứu Domain-specific:** Tìm hiểu thật sâu các quy tắc nghiệp vụ của mục tiêu để nhận diện các kịch bản khai thác có lợi nhất trong ngữ cảnh đó.
+
+## 6. Cách phòng ngừa và Khắc phục
+
+Để ngăn chặn các lỗ hổng Business Logic từ gốc, chìa khóa là:
+
+- Đảm bảo Developer và Tester hiểu rõ Domain mà ứng dụng phục vụ.
+- Tránh đưa ra các giả định ngầm về hành vi của người dùng hoặc của các phần khác trong ứng dụng.
+
+Ngoài ra, đội ngũ phát triển nên tuân thủ các nguyên tắc sau:
+
+- **Xác minh trạng thái Server-side:** Bạn cần xác định rõ những giả định nào đã được đặt ra về trạng thái Server-side và triển khai logic cần thiết để xác minh rằng các giả định này thực sự được đáp ứng. Điều này bao gồm việc đảm bảo giá trị của mọi Input đều hợp lý trước khi xử lý. Điều quan trọng không kém là đảm bảo cả Developer và Tester đều hiểu đầy đủ về các giả định này cũng như cách ứng dụng sẽ phản ứng trong các kịch bản khác nhau, qua đó giúp đội ngũ phát hiện lỗi logic càng sớm càng tốt.
+- **Lập tài liệu minh bạch:** Duy trì tài liệu thiết kế và Data flows rõ ràng cho tất cả các giao dịch, ghi chú cụ thể mọi giả định được đặt ra ở từng giai đoạn.
+- **Viết code rõ ràng:** Code càng rối rắm càng khó phát hiện lỗi logic. Lý tưởng nhất là code được viết tốt sẽ tự giải thích mà không cần tài liệu. Trong những trường hợp phức tạp, tài liệu rõ ràng là cốt lõi để đảm bảo mọi người hiểu đúng giả định và hành vi mong đợi.
+- **Ghi chú các thành phần phụ thuộc:** Bất kỳ tham chiếu nào đến các code khác sử dụng thành phần đó cũng cần được ghi chú rõ ràng. Hãy nghĩ đến các tác dụng phụ nếu một đối tượng độc hại thao túng chúng theo cách bất thường.
+- **Phân tích Root cause:** Rất dễ để gạt bỏ một lỗi logic như một sai sót một lần do lỗi con người. Tuy nhiên, hãy phân tích tại sao lỗ hổng này lại tồn tại ngay từ đầu và tại sao nó lại lọt qua được đội ngũ phát triển. Việc điều chỉnh nhỏ trong quy trình có thể giúp triệt tiêu các lỗi tương tự từ trong trứng nước.
+
+## Tham khảo
+
+- [PortSwigger — Business Logic Vulnerabilities](https://portswigger.net/web-security/logic-flaws)
